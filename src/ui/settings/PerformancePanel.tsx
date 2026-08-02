@@ -7,6 +7,7 @@ import {
   MemoryStick,
   Battery,
   Activity,
+  Heart,
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 
@@ -16,26 +17,31 @@ export function PerformancePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end animate-slide-in">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="relative flex h-full w-full max-w-md flex-col overflow-hidden border-l border-line bg-surface shadow-float animate-slide-in">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Gauge size={20} className="text-accent-500" />
-            <h2 className="text-lg font-semibold text-ink">Performance</h2>
+        <div className="flex items-center justify-between border-b border-line px-6 py-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-100 text-accent-500">
+              <Gauge size={18} />
+            </div>
+            <div>
+              <h2 className="font-display text-xl text-ink">Performance</h2>
+              <p className="text-[11px] text-ink-faint">How things are running</p>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+            className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
           >
             <X size={20} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <div className="flex-1 space-y-7 overflow-y-auto p-6">
           {/* Current stats */}
           <section>
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">
-              Last Generation
+              Last Response
             </h3>
             {perf ? (
               <div className="grid grid-cols-2 gap-3">
@@ -62,7 +68,10 @@ export function PerformancePanel({ onClose }: { onClose: () => void }) {
                 />
               </div>
             ) : (
-              <p className="text-sm text-ink-faint">No generation yet. Send a message to see metrics.</p>
+              <div className="rounded-3xl border border-line bg-surface-raised p-6 text-center shadow-card">
+                <Heart size={20} className="mx-auto mb-2 text-accent-300" fill="currentColor" />
+                <p className="text-sm text-ink-faint">No conversation yet. Say hello and I'll show you the numbers.</p>
+              </div>
             )}
           </section>
 
@@ -72,7 +81,7 @@ export function PerformancePanel({ onClose }: { onClose: () => void }) {
               <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">
                 Resource Usage
               </h3>
-              <div className="space-y-3">
+              <div className="space-y-3.5">
                 <ResourceBar
                   icon={<MemoryStick size={14} />}
                   label="RAM"
@@ -108,19 +117,19 @@ export function PerformancePanel({ onClose }: { onClose: () => void }) {
           {/* History */}
           <section>
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">
-              Recent Generations
+              Recent Responses
             </h3>
             {app.performanceHistory.length === 0 ? (
-              <p className="text-sm text-ink-faint">No history yet.</p>
+              <p className="text-sm text-ink-faint">Nothing here yet.</p>
             ) : (
               <div className="space-y-2">
                 {app.performanceHistory.map((p, i) => (
                   <div
                     key={i}
-                    className="flex items-center justify-between rounded-lg border border-line bg-surface-raised px-3 py-2.5"
+                    className="flex items-center justify-between rounded-2xl border border-line bg-surface-raised px-4 py-3 shadow-card"
                   >
                     <div className="flex items-center gap-2">
-                      <Zap size={13} className="text-accent-500" />
+                      <Zap size={13} className="text-accent-400" />
                       <span className="text-sm font-medium text-ink">
                         {p.tokensPerSecond.toFixed(1)} tok/s
                       </span>
@@ -154,15 +163,15 @@ function StatCard({
 }) {
   return (
     <div
-      className={`rounded-xl border p-4 ${
-        accent ? 'border-accent-500 bg-accent-50/20' : 'border-line bg-surface-raised'
+      className={`rounded-3xl border p-5 shadow-card ${
+        accent ? 'border-accent-300 bg-accent-50/40' : 'border-line bg-surface-raised'
       }`}
     >
-      <div className={`mb-1.5 flex items-center gap-1.5 ${accent ? 'text-accent-600' : 'text-ink-faint'}`}>
+      <div className={`mb-2 flex items-center gap-1.5 ${accent ? 'text-accent-600' : 'text-ink-faint'}`}>
         {icon}
         <span className="text-xs">{label}</span>
       </div>
-      <p className={`text-xl font-bold ${accent ? 'text-accent-700' : 'text-ink'}`}>{value}</p>
+      <p className={`text-2xl font-semibold ${accent ? 'text-accent-700' : 'text-ink'}`}>{value}</p>
     </div>
   );
 }
@@ -183,7 +192,7 @@ function ResourceBar({
   const pct = Math.min(100, (value / max) * 100);
   return (
     <div>
-      <div className="mb-1.5 flex items-center justify-between text-sm">
+      <div className="mb-2 flex items-center justify-between text-sm">
         <span className="flex items-center gap-1.5 text-ink-muted">
           {icon}
           {label}
@@ -194,7 +203,7 @@ function ResourceBar({
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-surface-subtle">
         <div
-          className="h-full rounded-full bg-accent-500 transition-all"
+          className="h-full rounded-full bg-accent-300 transition-all"
           style={{ width: `${pct}%` }}
         />
       </div>

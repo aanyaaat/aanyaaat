@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,84 +6,96 @@
 
 :root {
   color-scheme: light;
-  --surface: 255 255 255;
-  --surface-raised: 250 250 252;
+  /* Aanyaa warm palette */
+  --surface: 255 248 251;
+  --surface-raised: 255 255 255;
   --surface-overlay: 255 255 255;
-  --surface-subtle: 244 244 248;
-  --ink: 23 23 27;
-  --ink-muted: 90 90 98;
-  --ink-faint: 150 150 160;
-  --line: 234 234 240;
-  --line-strong: 210 210 220;
-  --success: 16 122 87;
-  --warning: 179 119 0;
-  --error: 185 28 28;
-  --scrollbar: 200 200 210;
+  --surface-subtle: 255 241 245;
+  --ink: 55 55 55;
+  --ink-muted: 122 122 122;
+  --ink-faint: 168 168 168;
+  --line: 240 220 227;
+  --line-strong: 229 197 209;
+  --success: 168 213 186;
+  --warning: 255 209 102;
+  --error: 242 132 130;
+  --scrollbar: 247 200 216;
 }
 
 .dark {
   color-scheme: dark;
-  --surface: 24 24 27;
-  --surface-raised: 32 32 36;
-  --surface-overlay: 38 38 42;
-  --surface-subtle: 44 44 50;
-  --ink: 236 236 240;
-  --ink-muted: 168 168 178;
-  --ink-faint: 120 120 130;
-  --line: 52 52 58;
-  --line-strong: 72 72 82;
-  --success: 52 199 142;
-  --warning: 224 170 60;
-  --error: 240 90 90;
-  --scrollbar: 80 80 90;
+  --surface: 28 24 26;
+  --surface-raised: 38 32 35;
+  --surface-overlay: 46 38 42;
+  --surface-subtle: 52 42 46;
+  --ink: 240 234 236;
+  --ink-muted: 188 178 182;
+  --ink-faint: 138 128 132;
+  --line: 60 48 52;
+  --line-strong: 84 66 72;
+  --success: 168 213 186;
+  --warning: 255 209 102;
+  --error: 242 132 130;
+  --scrollbar: 160 120 136;
 }
 
 .amoled {
   color-scheme: dark;
   --surface: 0 0 0;
-  --surface-raised: 8 8 10;
-  --surface-overlay: 14 14 16;
-  --surface-subtle: 18 18 22;
-  --ink: 236 236 240;
-  --ink-muted: 170 170 180;
-  --ink-faint: 110 110 120;
-  --line: 28 28 32;
-  --line-strong: 44 44 50;
-  --success: 52 199 142;
-  --warning: 224 170 60;
-  --error: 240 90 90;
-  --scrollbar: 60 60 70;
+  --surface-raised: 12 8 10;
+  --surface-overlay: 20 14 18;
+  --surface-subtle: 28 20 24;
+  --ink: 240 234 236;
+  --ink-muted: 188 178 182;
+  --ink-faint: 130 120 124;
+  --line: 38 28 32;
+  --line-strong: 58 44 50;
+  --success: 168 213 186;
+  --warning: 255 209 102;
+  --error: 242 132 130;
+  --scrollbar: 140 100 116;
 }
 
-/* Default accent — Material You blue. Overridden at runtime when user picks a seed color. */
+/* Aanyaa accent — soft rose. Overridden at runtime when user picks a seed color. */
 :root,
 .dark,
 .amoled {
-  --accent-50: 236 245 255;
-  --accent-100: 214 234 255;
-  --accent-200: 176 216 255;
-  --accent-300: 126 190 255;
-  --accent-400: 72 158 255;
-  --accent-500: 38 128 245;
-  --accent-600: 24 98 220;
-  --accent-700: 26 78 188;
-  --accent-800: 30 64 150;
-  --accent-900: 32 56 122;
-  --accent-950: 21 34 75;
+  --accent-50: 252 244 247;
+  --accent-100: 248 232 239;
+  --accent-200: 247 200 216;
+  --accent-300: 233 165 181;
+  --accent-400: 181 131 141;
+  --accent-500: 181 131 141;
+  --accent-600: 165 110 122;
+  --accent-700: 140 88 98;
+  --accent-800: 112 70 80;
+  --accent-900: 90 56 66;
+  --accent-950: 60 36 44;
 }
 
 html, body, #root {
   height: 100%;
 }
 
+/* Safe area utilities for mobile */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-left { padding-left: env(safe-area-inset-left); }
+.safe-right { padding-right: env(safe-area-inset-right); }
+
 body {
   margin: 0;
   background: rgb(var(--surface));
   color: rgb(var(--ink));
-  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-family: 'Poppins', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow: hidden;
+}
+
+.font-display {
+  font-family: 'DM Serif Display', 'Poppins', serif;
 }
 
 * {
@@ -92,8 +104,8 @@ body {
 }
 
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 *::-webkit-scrollbar-thumb {
   background: rgb(var(--scrollbar));
@@ -110,23 +122,24 @@ body {
 
 /* Markdown rendering */
 .md-content {
-  line-height: 1.6;
+  line-height: 1.65;
   word-break: break-word;
 }
 .md-content > *:first-child { margin-top: 0; }
 .md-content > *:last-child { margin-bottom: 0; }
-.md-content p { margin: 0.5rem 0; }
-.md-content h1 { font-size: 1.5rem; font-weight: 700; margin: 1rem 0 0.5rem; }
-.md-content h2 { font-size: 1.3rem; font-weight: 700; margin: 1rem 0 0.5rem; }
-.md-content h3 { font-size: 1.15rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }
-.md-content ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
-.md-content ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
-.md-content li { margin: 0.25rem 0; }
+.md-content p { margin: 0.6rem 0; }
+.md-content h1 { font-size: 1.5rem; font-weight: 600; margin: 1.2rem 0 0.6rem; }
+.md-content h2 { font-size: 1.3rem; font-weight: 600; margin: 1.1rem 0 0.5rem; }
+.md-content h3 { font-size: 1.15rem; font-weight: 500; margin: 0.9rem 0 0.5rem; }
+.md-content ul { list-style: disc; padding-left: 1.4rem; margin: 0.6rem 0; }
+.md-content ol { list-style: decimal; padding-left: 1.4rem; margin: 0.6rem 0; }
+.md-content li { margin: 0.3rem 0; }
 .md-content blockquote {
-  border-left: 3px solid rgb(var(--accent-400));
-  padding-left: 0.75rem;
-  margin: 0.5rem 0;
+  border-left: 3px solid rgb(var(--accent-300));
+  padding-left: 0.85rem;
+  margin: 0.6rem 0;
   color: rgb(var(--ink-muted));
+  font-style: italic;
 }
 .md-content a {
   color: rgb(var(--accent-600));
@@ -134,49 +147,49 @@ body {
   text-underline-offset: 2px;
 }
 .md-content code:not(pre code) {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: 'Poppins', ui-monospace, monospace;
   font-size: 0.85em;
   background: rgb(var(--surface-subtle));
-  padding: 0.1rem 0.35rem;
-  border-radius: 0.3rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 0.5rem;
 }
 .md-content pre {
   margin: 0;
 }
 .md-content table {
   border-collapse: collapse;
-  margin: 0.5rem 0;
+  margin: 0.6rem 0;
   font-size: 0.9em;
 }
 .md-content th, .md-content td {
   border: 1px solid rgb(var(--line));
-  padding: 0.35rem 0.6rem;
+  padding: 0.4rem 0.7rem;
 }
 .md-content th { background: rgb(var(--surface-subtle)); font-weight: 600; }
-.md-content hr { border: none; border-top: 1px solid rgb(var(--line)); margin: 0.75rem 0; }
+.md-content hr { border: none; border-top: 1px solid rgb(var(--line)); margin: 1rem 0; }
 
 /* Accessibility: focus rings */
 :focus-visible {
-  outline: 2px solid rgb(var(--accent-500));
+  outline: 2px solid rgb(var(--accent-400));
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 999px;
 }
 
 /* High-contrast utility */
 .high-contrast {
-  --ink-faint: 110 110 120;
-  --line: 180 180 190;
+  --ink-faint: 110 110 110;
+  --line: 210 190 198;
 }
 .dark .high-contrast,
 .amoled .high-contrast {
-  --ink-faint: 150 150 160;
-  --line: 90 90 100;
+  --ink-faint: 160 150 154;
+  --line: 96 78 84;
 }
 
 .large-fonts {
   font-size: 1.0625rem;
 }
-.large-fonts .md-content { font-size: 1.0625rem; line-height: 1.65; }
+.large-fonts .md-content { font-size: 1.0625rem; line-height: 1.7; }
 
 input[type='range'] {
   -webkit-appearance: none;
@@ -191,21 +204,39 @@ input[type='range']::-webkit-slider-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: rgb(var(--accent-500));
+  background: rgb(var(--accent-300));
   cursor: pointer;
-  border: 2px solid rgb(var(--surface));
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+  border: 2px solid rgb(var(--surface-raised));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
 }
 input[type='range']::-moz-range-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: rgb(var(--accent-500));
+  background: rgb(var(--accent-300));
   cursor: pointer;
-  border: 2px solid rgb(var(--surface));
+  border: 2px solid rgb(var(--surface-raised));
 }
 
 ::selection {
   background: rgb(var(--accent-200));
   color: rgb(var(--ink));
+}
+
+/* Soft breathing animation for loading */
+@keyframes aanyaa-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+.aanyaa-breathe {
+  animation: aanyaa-breathe 2.4s ease-in-out infinite;
+}
+
+/* Soft dot loading */
+@keyframes aanyaa-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+.aanyaa-dot {
+  animation: aanyaa-dot 1.4s ease-in-out infinite;
 }

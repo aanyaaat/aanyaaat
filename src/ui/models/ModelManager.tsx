@@ -11,6 +11,7 @@ import {
   Trash2,
   Zap,
   AlertCircle,
+  Heart,
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 import { formatBytes } from '@/data/modelCatalog';
@@ -31,61 +32,74 @@ export function ModelManager({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-float animate-scale-in">
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-[32px] border border-line bg-surface shadow-float animate-scale-in">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Layers size={20} className="text-accent-500" />
-            <h2 className="text-lg font-semibold text-ink">Model Manager</h2>
+        <div className="flex items-center justify-between border-b border-line px-6 py-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-100 text-accent-500">
+              <Layers size={18} />
+            </div>
+            <div>
+              <h2 className="font-display text-xl text-ink">Models</h2>
+              <p className="text-[11px] text-ink-faint">Pick one to bring me to life</p>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+            className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
           >
             <X size={20} />
           </button>
         </div>
 
         {/* Status banner */}
-        <div className="border-b border-line bg-surface-subtle px-5 py-3">
+        <div className="border-b border-line bg-surface-subtle/60 px-6 py-4">
           {app.loadState.status === 'ready' ? (
-            <div className="flex items-center gap-2 text-sm text-success">
-              <Check size={16} />
+            <div className="flex items-center gap-2.5 text-sm text-success">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-success/20">
+                <Check size={14} />
+              </div>
               <span>
-                Loaded: <strong className="font-semibold">{loadedName(app.models, app.loadState.modelId)}</strong>
+                Ready to chat — <strong className="font-semibold">{loadedName(app.models, app.loadState.modelId)}</strong>
               </span>
             </div>
           ) : app.loadState.status === 'loading' ? (
-            <div className="flex items-center gap-2 text-sm text-accent-600">
-              <Loader2 size={16} className="animate-spin" />
-              <span>Downloading / loading model… {Math.round(app.loadState.progress * 100)}%</span>
-              <div className="ml-2 h-1.5 flex-1 overflow-hidden rounded-full bg-line">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2.5 text-sm text-accent-600">
+                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-100">
+                  <Heart size={13} fill="currentColor" className="aanyaa-breathe" />
+                </div>
+                <span>Waking up… just a moment ❤️ {Math.round(app.loadState.progress * 100)}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-line">
                 <div
-                  className="h-full rounded-full bg-accent-500 transition-all"
+                  className="h-full rounded-full bg-accent-300 transition-all"
                   style={{ width: `${app.loadState.progress * 100}%` }}
                 />
               </div>
             </div>
           ) : app.loadState.status === 'error' ? (
-            <div className="flex items-center gap-2 text-sm text-error">
+            <div className="flex items-center gap-2.5 text-sm text-error">
               <AlertCircle size={16} />
               <span>{app.loadState.error ?? 'Failed to load model'}</span>
             </div>
           ) : (
-            <p className="text-sm text-ink-muted">No model loaded. Pick one below — the first load downloads it to your device, then it runs offline forever.</p>
+            <p className="text-sm leading-relaxed text-ink-muted">
+              No model loaded yet. Pick one below — the first load downloads it to your device, then it runs offline forever.
+            </p>
           )}
         </div>
 
         {/* Model list */}
-        <div className="flex-1 overflow-y-auto p-4">
-          <div className="mb-3 flex items-center justify-between">
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="mb-4 flex items-center justify-between">
             <span className="text-sm font-medium text-ink-muted">
-              {app.models.length} model{app.models.length !== 1 ? 's' : ''} detected
+              {app.models.length} model{app.models.length !== 1 ? 's' : ''} available
             </span>
             <button
               onClick={() => fileRef.current?.click()}
-              className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              className="flex items-center gap-1.5 rounded-full border border-line px-4 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
             >
               <Upload size={14} />
               Add model file
@@ -106,9 +120,9 @@ export function ModelManager({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Footer note */}
-        <div className="border-t border-line px-5 py-3">
-          <p className="text-xs text-ink-faint">
-            Models download once via WebGPU, then run fully offline. On Android, place GGUF files in <code className="font-mono">/storage/emulated/0/OfflineAI/models/</code> for auto-detection.
+        <div className="border-t border-line px-6 py-4">
+          <p className="text-xs leading-relaxed text-ink-faint">
+            Models download once via WebGPU, then run fully offline. On Android, place GGUF files in <code className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-[11px]">/storage/emulated/0/OfflineAI/models/</code> for auto-detection.
           </p>
         </div>
       </div>
@@ -129,25 +143,28 @@ function ModelRow({ model }: { model: ModelInfo }) {
 
   return (
     <div
-      className={`mb-2 rounded-xl border p-4 transition-colors ${isLoaded ? 'border-accent-500 bg-accent-50/30' : 'border-line bg-surface-raised hover:border-line-strong'
-        }`}
+      className={`mb-2.5 rounded-3xl border p-5 transition-all ${
+        isLoaded
+          ? 'border-accent-300 bg-accent-50/40 shadow-card'
+          : 'border-line bg-surface-raised hover:border-line-strong hover:shadow-card'
+      }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate font-semibold text-ink">{model.name}</h3>
+            <h3 className="truncate font-medium text-ink">{model.name}</h3>
             {isLoaded && (
-              <span className="flex items-center gap-1 rounded-full bg-accent-100 px-2 py-0.5 text-[11px] font-medium text-accent-700">
+              <span className="flex items-center gap-1 rounded-full bg-accent-100 px-2.5 py-0.5 text-[11px] font-medium text-accent-700">
                 <Check size={10} /> Active
               </span>
             )}
             {!model.supported && (
-              <span className="rounded-full bg-warning/20 px-2 py-0.5 text-[11px] font-medium text-warning">
+              <span className="rounded-full bg-warning/20 px-2.5 py-0.5 text-[11px] font-medium text-warning">
                 Unsupported
               </span>
             )}
           </div>
-          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-muted">
+          <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-muted">
             <span className="flex items-center gap-1">
               <HardDrive size={12} /> {formatBytes(model.sizeBytes)}
             </span>
@@ -164,14 +181,14 @@ function ModelRow({ model }: { model: ModelInfo }) {
               <Zap size={12} /> {model.contextLength.toLocaleString()} ctx
             </span>
           </div>
-          <p className="mt-1 font-mono text-[11px] text-ink-faint">{model.fileName}</p>
+          <p className="mt-1.5 font-mono text-[11px] text-ink-faint">{model.fileName}</p>
         </div>
 
-        <div className="flex shrink-0 flex-col gap-1.5">
+        <div className="flex shrink-0 flex-col gap-2">
           {isLoaded ? (
             <button
               onClick={() => app.unloadModel()}
-              className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              className="rounded-full border border-line px-4 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
             >
               Unload
             </button>
@@ -179,7 +196,7 @@ function ModelRow({ model }: { model: ModelInfo }) {
             <button
               onClick={() => app.loadModel(model.id)}
               disabled={isLoading || !model.supported}
-              className="flex items-center gap-1.5 rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white transition-all hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-faint"
+              className="flex items-center gap-1.5 rounded-full bg-accent-300 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-accent-400 active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-subtle disabled:text-ink-faint"
             >
               {isLoading ? <Loader2 size={14} className="animate-spin" /> : null}
               {isLoading ? 'Loading…' : 'Load'}
@@ -188,7 +205,7 @@ function ModelRow({ model }: { model: ModelInfo }) {
           {!isBundled && (
             <button
               onClick={() => app.uninstallModel(model.id)}
-              className="flex items-center justify-center gap-1 rounded-lg border border-line px-3 py-1 text-xs text-ink-faint transition-colors hover:bg-error/10 hover:text-error"
+              className="flex items-center justify-center gap-1 rounded-full border border-line px-4 py-1.5 text-xs text-ink-faint transition-colors hover:bg-error/10 hover:text-error"
             >
               <Trash2 size={12} /> Remove
             </button>

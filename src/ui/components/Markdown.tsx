@@ -217,19 +217,19 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-line bg-surface-subtle">
-      <div className="flex items-center justify-between border-b border-line px-3 py-1.5">
-        <span className="font-mono text-xs text-ink-faint">{lang}</span>
+    <div className="my-3 overflow-hidden rounded-2xl border border-line bg-surface-subtle">
+      <div className="flex items-center justify-between border-b border-line px-4 py-2">
+        <span className="text-xs text-ink-faint">{lang}</span>
         <button
           onClick={copy}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-raised hover:text-ink"
+          className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-raised hover:text-ink"
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-sm">
-        <code className="font-mono leading-relaxed">{code}</code>
+      <pre className="overflow-x-auto p-4 text-sm">
+        <code className="leading-relaxed">{code}</code>
       </pre>
     </div>
   );

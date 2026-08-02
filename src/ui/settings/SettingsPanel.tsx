@@ -1,45 +1,34 @@
-import {
-  SlidersHorizontal,
-  X,
-  Thermometer,
-  Percent,
-  Hash,
-  RotateCw,
-  Maximize2,
-  ScrollText,
-  Cpu,
-  Layers,
-  Dices,
-  MessageSquareCode,
-  UserCircle2,
-  Radio,
-  Lock,
-} from 'lucide-react';
+import { SlidersHorizontal, X, Thermometer, Percent, Hash, RotateCw, Maximize2, ScrollText, Cpu, Layers, Dices, MessageSquareCode, CircleUser as UserCircle2, Radio, Lock, RotateCcw, Info, Heart } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
-import { DEFAULT_SETTINGS, type GenerationSettings } from '@/domain/types';
+import { DEFAULT_SETTINGS } from '@/domain/types';
 
-export function SettingsPanel({ onClose }: { onClose: () => void }) {
+export function SettingsPanel({ onClose, onShowAbout }: { onClose: () => void; onShowAbout: () => void }) {
   const app = useApp();
   const s = app.settings;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end animate-slide-in">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="relative flex h-full w-full max-w-md flex-col overflow-hidden border-l border-line bg-surface shadow-float animate-slide-in">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <SlidersHorizontal size={20} className="text-accent-500" />
-            <h2 className="text-lg font-semibold text-ink">Generation Settings</h2>
+        <div className="flex items-center justify-between border-b border-line px-6 py-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-100 text-accent-500">
+              <SlidersHorizontal size={18} />
+            </div>
+            <div>
+              <h2 className="font-display text-xl text-ink">Conversation Settings</h2>
+              <p className="text-[11px] text-ink-faint">Tune how Aanyaa responds</p>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+            className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
           >
             <X size={20} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 overflow-y-auto p-6">
           <div className="space-y-6">
             <Section title="Sampling">
               <Slider
@@ -160,7 +149,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 icon={<UserCircle2 size={14} />}
                 label="Persona"
                 value={s.persona}
-                placeholder="e.g. a concise technical writer"
+                placeholder="e.g. a gentle, encouraging friend"
                 onChange={(v) => app.updateSettings({ persona: v })}
               />
               <TextInput
@@ -180,18 +169,34 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               />
             </Section>
 
-            <div className="rounded-xl border border-line bg-surface-subtle p-4">
+            <div className="rounded-3xl border border-line bg-surface-subtle/60 p-5">
               <div className="flex items-center gap-2 text-sm text-ink-muted">
                 <Lock size={14} />
-                <span>All settings stored locally. Nothing leaves your device.</span>
+                <span>All settings stay on your device. Nothing leaves.</span>
               </div>
             </div>
 
             <button
               onClick={() => app.updateSettings(DEFAULT_SETTINGS)}
-              className="w-full rounded-xl border border-line py-2.5 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              className="flex w-full items-center justify-center gap-2 rounded-full border border-line py-3 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
             >
+              <RotateCcw size={14} />
               Reset to defaults
+            </button>
+
+            {/* About card */}
+            <button
+              onClick={onShowAbout}
+              className="flex w-full items-center gap-3.5 rounded-3xl border border-line bg-surface-raised p-5 text-left shadow-card transition-all hover:border-line-strong hover:shadow-card-hover active:scale-[0.99]"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-100 text-accent-500">
+                <Info size={18} />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-ink">About Aanyaa</p>
+                <p className="mt-0.5 text-xs text-ink-faint">Version, privacy, credits</p>
+              </div>
+              <Heart size={14} className="text-accent-400" fill="currentColor" />
             </button>
           </div>
         </div>
@@ -202,9 +207,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
-      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">{title}</h3>
-      <div className="space-y-4">{children}</div>
+    <div className="rounded-3xl border border-line bg-surface-raised p-5 shadow-card">
+      <h3 className="mb-4 text-xs font-semibold uppercase tracking-wide text-ink-faint">{title}</h3>
+      <div className="space-y-5">{children}</div>
     </div>
   );
 }
@@ -230,12 +235,12 @@ function Slider({
 }) {
   return (
     <div>
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="mb-2 flex items-center justify-between">
         <label className="flex items-center gap-1.5 text-sm text-ink-muted">
           {icon}
           {label}
         </label>
-        <span className="font-mono text-sm font-medium text-ink">{value}</span>
+        <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 font-mono text-sm font-medium text-ink">{value}</span>
       </div>
       <input
         type="range"
@@ -246,7 +251,7 @@ function Slider({
         onChange={(e) => onChange(parseFloat(e.target.value))}
         className="w-full"
       />
-      {hint && <p className="mt-1 text-xs text-ink-faint">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-ink-faint">{hint}</p>}
     </div>
   );
 }
@@ -271,7 +276,7 @@ function Toggle({
       <button
         onClick={() => onChange(!checked)}
         className={`relative h-6 w-11 rounded-full transition-colors ${
-          checked ? 'bg-accent-600' : 'bg-line-strong'
+          checked ? 'bg-accent-300' : 'bg-line-strong'
         }`}
         role="switch"
         aria-checked={checked}
@@ -301,7 +306,7 @@ function TextArea({
 }) {
   return (
     <div>
-      <label className="mb-1.5 flex items-center gap-1.5 text-sm text-ink-muted">
+      <label className="mb-2 flex items-center gap-1.5 text-sm text-ink-muted">
         {icon}
         {label}
       </label>
@@ -309,7 +314,7 @@ function TextArea({
         value={value}
         rows={rows}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full resize-none rounded-lg border border-line bg-surface-raised p-3 text-sm text-ink focus:border-accent-500 focus:outline-none"
+        className="w-full resize-none rounded-[20px] border border-line bg-surface p-3.5 text-sm text-ink transition-colors focus:border-accent-300 focus:outline-none"
       />
     </div>
   );
@@ -330,7 +335,7 @@ function TextInput({
 }) {
   return (
     <div>
-      <label className="mb-1.5 flex items-center gap-1.5 text-sm text-ink-muted">
+      <label className="mb-2 flex items-center gap-1.5 text-sm text-ink-muted">
         {icon}
         {label}
       </label>
@@ -339,7 +344,7 @@ function TextInput({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-line bg-surface-raised p-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-accent-500 focus:outline-none"
+        className="w-full rounded-[20px] border border-line bg-surface p-3 text-sm text-ink placeholder:text-ink-faint transition-colors focus:border-accent-300 focus:outline-none"
       />
     </div>
   );

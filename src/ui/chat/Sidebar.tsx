@@ -9,6 +9,7 @@ import {
   Download,
   X,
   Check,
+  Heart,
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 import type { Chat, ExportFormat } from '@/domain/types';
@@ -61,12 +62,17 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
   return (
     <aside className="flex h-full w-72 flex-col border-r border-line bg-surface-raised">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3">
-        <span className="text-sm font-semibold text-ink">Conversations</span>
+      <div className="flex items-center justify-between px-5 py-4">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-200 text-accent-700">
+            <Heart size={14} fill="currentColor" />
+          </div>
+          <span className="font-display text-base text-ink">Aanyaa</span>
+        </div>
         {onClose && (
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink md:hidden"
+            className="rounded-full p-1.5 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink md:hidden"
             aria-label="Close sidebar"
           >
             <X size={18} />
@@ -75,40 +81,40 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       </div>
 
       {/* New chat */}
-      <div className="px-3 pb-2">
+      <div className="px-4 pb-3">
         <button
           onClick={() => app.createChat()}
-          className="flex w-full items-center gap-2 rounded-xl bg-accent-600 px-3 py-2.5 text-sm font-medium text-white transition-all hover:bg-accent-700 active:scale-[0.98]"
+          className="flex w-full items-center gap-2.5 rounded-full bg-accent-200 px-4 py-3 text-sm font-medium text-accent-700 transition-all hover:bg-accent-300 active:scale-[0.98]"
         >
           <MessageSquarePlus size={18} />
-          New chat
+          New conversation
         </button>
       </div>
 
       {/* Search */}
-      <div className="px-3 pb-2">
+      <div className="px-4 pb-3">
         <div className="relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint" />
           <input
             value={query}
             onChange={(e) => onSearch(e.target.value)}
-            placeholder="Search chats and messages"
-            className="w-full rounded-lg border border-line bg-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-ink-faint focus:border-accent-500 focus:outline-none"
+            placeholder="Search our conversations"
+            className="w-full rounded-full border border-line bg-surface py-2.5 pl-10 pr-4 text-sm text-ink placeholder:text-ink-faint transition-colors focus:border-accent-300 focus:outline-none"
           />
         </div>
       </div>
 
       {/* Chat list */}
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
+      <div className="flex-1 overflow-y-auto px-3 pb-2">
         {list.length === 0 && (
-          <p className="px-3 py-8 text-center text-sm text-ink-faint">
-            {query ? 'No matches found.' : 'No conversations yet.'}
+          <p className="px-3 py-10 text-center text-sm text-ink-faint">
+            {query ? 'No matches found.' : "I'm here whenever you'd like to chat."}
           </p>
         )}
         {list.map((chat) => (
           <div
             key={chat.id}
-            className={`group mb-0.5 rounded-lg transition-colors ${
+            className={`group mb-1 rounded-2xl transition-colors ${
               app.activeChatId === chat.id ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
             }`}
           >
@@ -118,7 +124,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
                   app.selectChat(chat.id);
                   onClose?.();
                 }}
-                className="flex-1 truncate px-3 py-2.5 text-left text-sm text-ink"
+                className="flex-1 truncate px-3.5 py-3 text-left text-sm text-ink"
               >
                 {renamingId === chat.id ? (
                   <input
@@ -131,11 +137,11 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
                       if (e.key === 'Escape') setRenamingId(null);
                     }}
                     onBlur={commitRename}
-                    className="w-full rounded border border-accent-500 bg-surface px-1 py-0.5 text-sm text-ink focus:outline-none"
+                    className="w-full rounded-lg border border-accent-400 bg-surface px-2 py-1 text-sm text-ink focus:outline-none"
                   />
                 ) : (
                   <span className="flex items-center gap-1.5">
-                    {chat.pinned && <Pin size={11} className="shrink-0 text-accent-500" />}
+                    {chat.pinned && <Pin size={11} className="shrink-0 text-accent-400" />}
                     <span className="truncate">{chat.title}</span>
                   </span>
                 )}
@@ -143,7 +149,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             </div>
 
             {/* Row actions */}
-            <div className="flex items-center justify-end gap-0.5 px-2 pb-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="flex items-center justify-end gap-0.5 px-2.5 pb-1.5 opacity-0 transition-opacity group-hover:opacity-100">
               <IconBtn label="Pin" onClick={() => app.togglePin(chat.id)}>
                 {chat.pinned ? <PinOff size={14} /> : <Pin size={14} />}
               </IconBtn>
@@ -159,12 +165,12 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             </div>
 
             {exportId === chat.id && (
-              <div className="flex items-center gap-1 px-3 pb-2 animate-slide-in">
+              <div className="flex items-center gap-1.5 px-3.5 pb-2.5 animate-slide-in">
                 {(['txt', 'md', 'json'] as ExportFormat[]).map((f) => (
                   <button
                     key={f}
                     onClick={() => doExport(chat.id, f)}
-                    className="rounded-md border border-line px-2 py-1 text-xs uppercase text-ink-muted transition-colors hover:bg-surface hover:text-ink"
+                    className="rounded-full border border-line px-3 py-1 text-xs uppercase text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                   >
                     {f}
                   </button>
@@ -175,9 +181,18 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         ))}
       </div>
 
-      {/* Footer */}
-      <div className="border-t border-line px-4 py-3">
-        <p className="text-xs text-ink-faint">
+      {/* Footer — About */}
+      <div className="border-t border-line px-5 py-4">
+        <div className="mb-2 flex items-center gap-2">
+          <Heart size={13} className="text-accent-400" fill="currentColor" />
+          <p className="text-xs font-medium text-ink-muted">
+            Aanyaa · Made with <span className="text-accent-400">❤️</span>
+          </p>
+        </div>
+        <p className="text-[11px] leading-relaxed text-ink-faint">
+          Everything stays on your device. No cloud. No tracking. Just conversations.
+        </p>
+        <p className="mt-2 text-[11px] text-ink-faint">
           {app.chats.length} conversation{app.chats.length !== 1 ? 's' : ''} · stored locally
         </p>
       </div>
@@ -199,7 +214,7 @@ function IconBtn({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="rounded-md p-1.5 text-ink-faint transition-colors hover:bg-surface hover:text-ink"
+      className="rounded-full p-1.5 text-ink-faint transition-colors hover:bg-surface hover:text-ink"
     >
       {children}
     </button>
