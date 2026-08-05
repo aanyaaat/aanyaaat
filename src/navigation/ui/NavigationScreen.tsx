@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   Navigation,
@@ -22,6 +22,7 @@ import { CanvasMap } from '@/navigation/maps/CanvasMap';
 import { CompassFallback } from '@/navigation/ui/CompassFallback';
 import { EmergencyFallback } from '@/navigation/ui/EmergencyFallback';
 import { OfflineMapsPanel } from '@/navigation/ui/OfflineMapsPanel';
+import { HomeSetup } from '@/navigation/ui/HomeSetup';
 import { formatDistance, formatDuration } from '@/navigation/gps/gps';
 import type { TravelMode, InstructionType } from '@/navigation/domain/types';
 
@@ -29,10 +30,19 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const nav = useNav();
   const [showOfflineMaps, setShowOfflineMaps] = useState(false);
   const [showCompass, setShowCompass] = useState(false);
+  const [showHomeSetup, setShowHomeSetup] = useState(false);
 
   const needsSetup = !nav.home;
   const hasRoute = nav.route !== null;
   const isOffCoverage = nav.phase === 'off-coverage';
+
+  // Auto-start GPS when the screen opens
+  useEffect(() => {
+    nav.startGpsOnly();
+    return () => {
+      nav.stopNavigation();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface animate-fade-in">
@@ -68,8 +78,30 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
 
       {/* Needs home setup */}
       {needsSetup ? (
-        <div className="flex flex-1 items-center justify-center p-6">
-          <EmergencyFallback onSetupHome={() => setShowOfflineMaps(false)} />
+        <div className="flex flex-1 flex-col items-center justify-center p-6">
+          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-100 text-accent-500">
+            <Home size={36} />
+          </div>
+          <p className="mt-5 text-xl font-semibold text-ink">Set Your Home</p>
+          <p className="mt-2 max-w-xs text-center text-sm text-ink-faint">
+            GET ME HOME needs to know where home is before it can navigate you there.
+          </p>
+          <button
+            onClick={() => setShowHomeSetup(true)}
+            className="mt-6 flex items-center gap-2 rounded-full bg-accent-300 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-400 active:scale-95"
+          >
+            <MapPin size={18} /> Set home location
+          </button>
+          {nav.gpsStatus === 'denied' && (
+            <p className="mt-4 max-w-xs text-center text-xs text-error">
+              Location permission was denied. Enable location access in your browser settings to use GPS navigation.
+            </p>
+          )}
+          {nav.gpsStatus === 'unavailable' && (
+            <p className="mt-4 max-w-xs text-center text-xs text-warning">
+              GPS is unavailable on this device. You can still set home manually by entering coordinates.
+            </p>
+          )}
         </div>
       ) : isOffCoverage ? (
         <div className="flex flex-1 flex-col overflow-y-auto">
@@ -200,6 +232,14 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
       {/* Offline maps sub-panel */}
       {showOfflineMaps && (
         <OfflineMapsOverlay onClose={() => setShowOfflineMaps(false)} />
+      )}
+
+      {/* Home setup sub-panel */}
+      {showHomeSetup && (
+        <HomeSetup
+          onClose={() => setShowHomeSetup(false)}
+          onProceed={() => setShowHomeSetup(false)}
+        />
       )}
     </div>
   );

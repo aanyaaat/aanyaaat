@@ -48,6 +48,7 @@ interface NavState {
 
   setHomeLocation: (home: HomeLocation) => void;
   removeHome: () => void;
+  startGpsOnly: () => void;
   startNavigation: () => Promise<void>;
   stopNavigation: () => void;
   setTravelMode: (m: TravelMode) => void;
@@ -87,6 +88,22 @@ export function NavProvider({ children }: { children: ReactNode }) {
   const watcherRef = useRef<GpsWatcher | null>(null);
   const routeAbortRef = useRef<AbortController | null>(null);
   const offRouteCountRef = useRef(0);
+  const phaseRef = useRef<NavPhase>('idle');
+  const homeRef = useRef<HomeLocation | null>(home);
+  const routeRef = useRef<RouteResult | null>(null);
+  const networkRef = useRef<NetworkStatus>(network);
+  const regionRef = useRef<OfflineRegion | null>(null);
+  const travelModeRef = useRef<TravelMode>(travelMode);
+  const offRouteRef = useRef(false);
+
+  // Keep refs in sync with state
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+  useEffect(() => { homeRef.current = home; }, [home]);
+  useEffect(() => { routeRef.current = route; }, [route]);
+  useEffect(() => { networkRef.current = network; }, [network]);
+  useEffect(() => { regionRef.current = region; }, [region]);
+  useEffect(() => { travelModeRef.current = travelMode; }, [travelMode]);
+  useEffect(() => { offRouteRef.current = offRoute; }, [offRoute]);
 
   // Network status tracking
   useEffect(() => {
@@ -128,14 +145,30 @@ export function NavProvider({ children }: { children: ReactNode }) {
     setOffRoute(false);
     setRemainingDistance(0);
     setNextInstructionIndex(0);
+    setGpsStatus('idle');
   }, []);
 
   const recenter = useCallback(() => {
     setRecenterSignal((s) => s + 1);
   }, []);
 
+  const startGpsOnly = useCallback(() => {
+    if (watcherRef.current) return; // already watching
+    watcherRef.current = startGpsWatch({
+      onStatus: (s) => setGpsStatus(s),
+      onFix: (fix) => {
+        setGpsFix(fix);
+        const p = phaseRef.current;
+        if (p === 'navigating' || p === 'recalculating') {
+          checkOffRouteRef.current(fix);
+        }
+      },
+    });
+  }, []);
+
   const startNavigation = useCallback(async () => {
-    if (!home) {
+    const currentHome = homeRef.current;
+    if (!currentHome) {
       setRouteError('Set your home location first.');
       return;
     }
@@ -149,17 +182,20 @@ export function NavProvider({ children }: { children: ReactNode }) {
       onStatus: (s) => setGpsStatus(s),
       onFix: async (fix) => {
         setGpsFix(fix);
+        const p = phaseRef.current;
 
-        // First fix → calculate route
-        if (phase === 'locating' || phase === 'idle') {
+        if (p === 'locating' || p === 'idle') {
           setPhase('calculating');
-          await calculateRoute(fix, home, false);
-        } else if (phase === 'navigating' || phase === 'recalculating') {
-          checkOffRoute(fix);
+          await calculateRouteRef.current(fix, currentHome, false);
+        } else if (p === 'navigating' || p === 'recalculating') {
+          checkOffRouteRef.current(fix);
         }
       },
     });
-  }, [home, phase]);
+  }, []);
+
+  const calculateRouteRef = useRef<(fix: GpsFix, dest: HomeLocation, isReroute: boolean) => Promise<void>>(async () => {});
+  const checkOffRouteRef = useRef<(fix: GpsFix) => void>(() => {});
 
   const calculateRoute = useCallback(
     async (fix: GpsFix, dest: HomeLocation, isReroute: boolean) => {
@@ -174,14 +210,14 @@ export function NavProvider({ children }: { children: ReactNode }) {
         let result: RouteResult | null = null;
 
         // Try online routing first if available (enhancement)
-        if (network === 'online') {
+        if (networkRef.current === 'online') {
           try {
             result = await routeOnline(
               fix.latitude,
               fix.longitude,
               dest.latitude,
               dest.longitude,
-              travelMode,
+              travelModeRef.current,
             );
           } catch {
             result = null; // fall through to offline
@@ -189,12 +225,13 @@ export function NavProvider({ children }: { children: ReactNode }) {
         }
 
         // Offline routing (core requirement)
-        if (!result && region) {
-          const inCoverage = isPointInRegion(fix.latitude, fix.longitude, region);
+        if (!result && regionRef.current) {
+          const r = regionRef.current;
+          const inCoverage = isPointInRegion(fix.latitude, fix.longitude, r);
           const destInCoverage = isPointInRegion(
             dest.latitude,
             dest.longitude,
-            region,
+            r,
           );
           if (!inCoverage || !destInCoverage) {
             setPhase('off-coverage');
@@ -206,12 +243,12 @@ export function NavProvider({ children }: { children: ReactNode }) {
             fix.longitude,
             dest.latitude,
             dest.longitude,
-            travelMode,
-            region,
+            travelModeRef.current,
+            r,
           );
         }
 
-        if (!result && network === 'offline' && !region) {
+        if (!result && networkRef.current === 'offline' && !regionRef.current) {
           setRouteError(
             'No offline map installed. Install a home area in Offline Maps first.',
           );
@@ -238,16 +275,20 @@ export function NavProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [network, region, travelMode],
+    [],
   );
+
+  // Keep ref in sync
+  useEffect(() => { calculateRouteRef.current = calculateRoute; }, [calculateRoute]);
 
   const checkOffRoute = useCallback(
     (fix: GpsFix) => {
-      if (!route || route.coordinates.length < 2) return;
+      const currentRoute = routeRef.current;
+      if (!currentRoute || currentRoute.coordinates.length < 2) return;
 
       // Distance from current GPS to nearest point on route
       let minDist = Infinity;
-      for (const c of route.coordinates) {
+      for (const c of currentRoute.coordinates) {
         const d = haversineMetersSimple(
           fix.latitude,
           fix.longitude,
@@ -260,31 +301,34 @@ export function NavProvider({ children }: { children: ReactNode }) {
       // Threshold: 50 meters, with persistence check (3 consecutive reads)
       if (minDist > 50) {
         offRouteCountRef.current += 1;
-        if (offRouteCountRef.current >= 3 && !offRoute) {
+        if (offRouteCountRef.current >= 3 && !offRouteRef.current) {
           setOffRoute(true);
           setPhase('recalculating');
-          void calculateRoute(fix, home!, true);
+          void calculateRouteRef.current(fix, homeRef.current!, true);
         }
       } else {
         offRouteCountRef.current = 0;
-        if (offRoute) {
+        if (offRouteRef.current) {
           setOffRoute(false);
         }
         updateProgress(fix);
       }
     },
-    [route, offRoute, home, calculateRoute],
+    [],
   );
+
+  useEffect(() => { checkOffRouteRef.current = checkOffRoute; }, [checkOffRoute]);
 
   const updateProgress = useCallback(
     (fix: GpsFix) => {
-      if (!route || route.coordinates.length < 2) return;
+      const currentRoute = routeRef.current;
+      if (!currentRoute || currentRoute.coordinates.length < 2) return;
 
       // Find nearest route point index
       let minDist = Infinity;
       let nearestIdx = 0;
-      for (let i = 0; i < route.coordinates.length; i++) {
-        const c = route.coordinates[i];
+      for (let i = 0; i < currentRoute.coordinates.length; i++) {
+        const c = currentRoute.coordinates[i];
         const d = haversineMetersSimple(
           fix.latitude,
           fix.longitude,
@@ -299,22 +343,22 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
       // Remaining distance from nearestIdx to end
       let rem = 0;
-      for (let i = nearestIdx; i < route.coordinates.length - 1; i++) {
+      for (let i = nearestIdx; i < currentRoute.coordinates.length - 1; i++) {
         rem += haversineMetersSimple(
-          route.coordinates[i].lat,
-          route.coordinates[i].lng,
-          route.coordinates[i + 1].lat,
-          route.coordinates[i + 1].lng,
+          currentRoute.coordinates[i].lat,
+          currentRoute.coordinates[i].lng,
+          currentRoute.coordinates[i + 1].lat,
+          currentRoute.coordinates[i + 1].lng,
         );
       }
       setRemainingDistance(rem);
 
       // Find next instruction
       let instrIdx = 0;
-      for (let i = 0; i < route.instructions.length; i++) {
+      for (let i = 0; i < currentRoute.instructions.length; i++) {
         if (
-          route.instructions[i].cumulativeMeters <=
-          route.distanceMeters - rem + 20
+          currentRoute.instructions[i].cumulativeMeters <=
+          currentRoute.distanceMeters - rem + 20
         ) {
           instrIdx = i;
         }
@@ -326,7 +370,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
         setPhase('arrived');
       }
     },
-    [route],
+    [],
   );
 
   const installOfflineRegion = useCallback(
@@ -379,6 +423,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       nextInstructionIndex,
       setHomeLocation,
       removeHome,
+      startGpsOnly,
       startNavigation,
       stopNavigation,
       setTravelMode,
@@ -404,6 +449,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       nextInstructionIndex,
       setHomeLocation,
       removeHome,
+      startGpsOnly,
       startNavigation,
       stopNavigation,
       setTravelMode,

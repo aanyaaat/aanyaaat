@@ -44,11 +44,16 @@ export function startGpsWatch(opts: GpsOptions): GpsWatcher {
     (err) => {
       if (err.code === err.PERMISSION_DENIED) {
         opts.onStatus('denied');
+      } else if (err.code === err.POSITION_UNAVAILABLE) {
+        opts.onStatus('unavailable');
+      } else if (err.code === err.TIMEOUT) {
+        // Timeout is often temporary — don't mark as permanently unavailable
+        opts.onStatus('locating');
       } else {
         opts.onStatus('unavailable');
       }
     },
-    { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 },
   );
 
   return {
