@@ -27,7 +27,7 @@ export function startGpsWatch(opts: GpsOptions): GpsWatcher {
   let lastFixTime = 0;
   let staleTimer: ReturnType<typeof setInterval> | null = null;
   const history: GpsFix[] = [];
-  const MAX_HISTORY = 5;
+  const MAX_HISTORY = 3;
   let lastInterpHeading: number | null = null;
 
   const id = navigator.geolocation.watchPosition(
@@ -102,7 +102,7 @@ export function startGpsWatch(opts: GpsOptions): GpsWatcher {
         opts.onStatus('unavailable');
       }
     },
-    { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 },
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 },
   );
 
   return {
@@ -152,7 +152,8 @@ function smoothFix(history: GpsFix[], lastHeading: number | null): GpsFix {
   if (valid.length === 1) return { ...valid[0] };
 
   // Weighted average: most recent gets highest weight
-  const weights = [1, 2, 3].slice(-valid.length).reverse();
+  // With 3 points: [1, 2, 6] → latest gets 67% weight for fast tracking
+  const weights = [1, 2, 6].slice(-valid.length).reverse();
   const totalWeight = weights.reduce((a, b) => a + b, 0);
 
   let lat = 0, lng = 0;

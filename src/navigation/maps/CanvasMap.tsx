@@ -18,73 +18,28 @@ interface CanvasMapProps {
 
 const TILE_SIZE = 256;
 
-const ROAD_COLORS: Record<number, string> = {
-  7: '#f5b878',
-  6: '#f5c890',
-  5: '#ffd0a0',
-  4: '#ffe0b8',
-  3: '#e8d8c8',
-  2: '#d8c8b8',
-  1: '#c0b8b0',
-};
+// ---- Tile system ----
+// We use multiple OSM tile servers and round-robin to speed up loading
+// and avoid hitting rate limits on a single server.
 
-const ROAD_WIDTHS: Record<number, number> = {
-  7: 5,
-  6: 4.5,
-  5: 3.5,
-  4: 2.5,
-  3: 2,
-  2: 1.5,
-  1: 1,
-};
-
-const ROAD_CASING: Record<number, string> = {
-  7: '#c89858',
-  6: '#c8a868',
-  5: '#d8a878',
-  4: '#d8b888',
-  3: '#c0b0a0',
-  2: '#b8a898',
-  1: '#a8a098',
-};
-
-const POI_COLORS: Record<string, string> = {
-  hospital: '#e63946',
-  police: '#3a86ff',
-  station: '#ffbe0b',
-  bus_stop: '#52b788',
-  landmark: '#9d4edd',
-};
-
-const PLACE_COLORS: Record<string, string> = {
-  home: '#e63946',
-  work: '#3a86ff',
-  favorite: '#ffbe0b',
-  recent: '#52b788',
-};
-
-interface PointerInfo {
-  id: number;
-  x: number;
-  y: number;
-}
-
-// ---- Online raster tile cache ----
-// When no offline regions are downloaded, we fetch OSM raster tiles
-// so the map is always visible and explorable.
+const TILE_SERVERS = [
+  'https://tile.openstreetmap.org',
+  'https://tile.openstreetmap.org',
+];
 
 const tileCache = new Map<string, HTMLImageElement>();
 const tileLoading = new Set<string>();
 const tileCallbacks = new Map<string, Array<(img: HTMLImageElement | null) => void>>();
 
-function getTileUrl(z: number, x: number, y: number): string {
-  return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+function tileUrl(z: number, x: number, y: number): string {
+  const server = TILE_SERVERS[(x + y) % TILE_SERVERS.length];
+  return `${server}/${z}/${x}/${y}.png`;
 }
 
 function loadTile(z: number, x: number, y: number): Promise<HTMLImageElement | null> {
   const key = `${z}/${x}/${y}`;
   const cached = tileCache.get(key);
-  if (cached) return Promise.resolve(cached);
+  if (cached && cached.complete) return Promise.resolve(cached);
   if (tileLoading.has(key)) {
     return new Promise((resolve) => {
       const cbs = tileCallbacks.get(key) ?? [];
@@ -96,7 +51,7 @@ function loadTile(z: number, x: number, y: number): Promise<HTMLImageElement | n
   tileLoading.add(key);
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // No crossOrigin — OSM tiles don't need CORS and it causes loading failures
     img.onload = () => {
       tileCache.set(key, img);
       tileLoading.delete(key);
@@ -116,35 +71,57 @@ function loadTile(z: number, x: number, y: number): Promise<HTMLImageElement | n
         tileCallbacks.delete(key);
       }
     };
-    img.src = getTileUrl(z, x, y);
+    img.src = tileUrl(z, x, y);
   });
 }
 
-// Limit tile cache to 200 entries to avoid memory bloat
 function pruneTileCache() {
-  if (tileCache.size > 200) {
+  if (tileCache.size > 300) {
     const keys = Array.from(tileCache.keys());
-    for (let i = 0; i < 50; i++) {
-      tileCache.delete(keys[i]);
-    }
+    for (let i = 0; i < 100; i++) tileCache.delete(keys[i]);
   }
 }
 
+// ---- Tile coordinate math ----
+
+function lngToTileX(lng: number, z: number): number {
+  return ((lng + 180) / 360) * Math.pow(2, z);
+}
+
+function latToTileY(lat: number, z: number): number {
+  const rad = (lat * Math.PI) / 180;
+  return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z);
+}
+
+// ---- Road styling ----
+
+const ROAD_COLORS: Record<number, string> = {
+  7: '#e892a2', 6: '#f2a678', 5: '#ffc090', 4: '#ffd8a8',
+  3: '#e8e0d0', 2: '#d8d0c0', 1: '#c8c0b8',
+};
+const ROAD_WIDTHS: Record<number, number> = {
+  7: 5, 6: 4.5, 5: 3.5, 4: 2.5, 3: 2, 2: 1.5, 1: 1,
+};
+const ROAD_CASING: Record<number, string> = {
+  7: '#c87888', 6: '#d08858', 5: '#d89868', 4: '#d8a878',
+  3: '#c0b0a0', 2: '#b8b0a0', 1: '#a8a098',
+};
+
+const POI_COLORS: Record<string, string> = {
+  hospital: '#e63946', police: '#3a86ff', station: '#ffbe0b',
+  bus_stop: '#52b788', landmark: '#9d4edd',
+};
+const PLACE_COLORS: Record<string, string> = {
+  home: '#e63946', work: '#3a86ff', favorite: '#ffbe0b', recent: '#52b788',
+};
+
+interface PointerInfo { id: number; x: number; y: number; }
+
 export function CanvasMap({
-  regions,
-  route,
-  gpsFix,
-  home,
-  destination,
-  savedPlaces,
-  recenterSignal,
-  followMode,
-  rotation,
-  onTap,
-  onLongPress,
+  regions, route, gpsFix, home, destination, savedPlaces,
+  recenterSignal, followMode, rotation, onTap, onLongPress,
 }: CanvasMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const vpRef = useRef<Viewport>({
     centerLat: gpsFix?.latitude ?? home?.latitude ?? 28.6139,
     centerLng: gpsFix?.longitude ?? home?.longitude ?? 77.2090,
@@ -153,37 +130,18 @@ export function CanvasMap({
     height: 400,
   });
   const pointersRef = useRef<Map<number, PointerInfo>>(new Map());
-  const dragRef = useRef<{ x: number; y: number; moved: boolean; startTime: number } | null>(null);
-  const pinchRef = useRef<{ dist: number; zoom: number; cx: number; cy: number } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
   const userPannedRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const dataRef = useRef({ regions, route, gpsFix, home, destination, savedPlaces, rotation });
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animRef = useRef<{ fromZoom: number; toZoom: number; start: number; duration: number } | null>(null);
   const initializedRef = useRef(false);
-  const tilesLoadedRef = useRef(0);
 
   dataRef.current = { regions, route, gpsFix, home, destination, savedPlaces, rotation };
 
-  // Initialize viewport once when we get first GPS or home
-  useEffect(() => {
-    if (initializedRef.current) return;
-    const center = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
-    if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
-      vpRef.current.centerLat = center.latitude;
-      vpRef.current.centerLng = center.longitude;
-      initializedRef.current = true;
-      scheduleDraw();
-    }
-  }, [gpsFix, home]);
-
-  const scheduleDraw = useCallback(() => {
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      draw();
-    });
-  }, []);
+  // ---- Drawing ----
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -212,22 +170,29 @@ export function CanvasMap({
     const hasOfflineData = data.regions.length > 0;
     const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
 
-    // Background — light gray for map areas, dark for no-data offline
-    ctx.fillStyle = hasOfflineData ? '#e8e4dd' : (isOnline ? '#e8e4dd' : '#252530');
+    // Background
+    ctx.fillStyle = isOnline || hasOfflineData ? '#e8e4dd' : '#252530';
     ctx.fillRect(0, 0, w, h);
 
-    // Apply rotation
+    // Apply rotation around center
     if (rotation !== 0) {
       ctx.translate(w / 2, h / 2);
       ctx.rotate((rotation * Math.PI) / 180);
       ctx.translate(-w / 2, -h / 2);
     }
 
-    if (!hasOfflineData && isOnline) {
-      // Draw online raster tiles
-      drawOnlineTiles(ctx, vp, w, h);
-    } else if (!hasOfflineData && !isOnline) {
-      // Empty state — show message
+    // Draw online raster tiles (always when online, even with offline data for context)
+    if (isOnline) {
+      drawTiles(ctx, vp, w, h);
+    }
+
+    // Draw offline vector data on top of tiles
+    if (hasOfflineData) {
+      drawOfflineData(ctx, vp, w, h, data);
+    }
+
+    // If offline and no data, show message
+    if (!isOnline && !hasOfflineData) {
       ctx.fillStyle = '#888';
       ctx.font = '14px system-ui, sans-serif';
       ctx.textAlign = 'center';
@@ -238,149 +203,144 @@ export function CanvasMap({
       ctx.fillText('Connect to internet or download an area', w / 2, h / 2 + 12);
     }
 
-    if (hasOfflineData) {
-      drawOfflineData(ctx, vp, w, h, data);
-    }
-
-    // Always draw markers and route on top
+    // Markers and route always on top
     drawMarkers(ctx, vp, w, h, data);
   }, []);
 
-  function drawOnlineTiles(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number) {
-    const z = Math.floor(vp.zoom);
-    const zClamped = Math.max(0, Math.min(19, z));
+  const scheduleDraw = useCallback(() => {
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      draw();
+    });
+  }, [draw]);
 
-    // Calculate which tiles are visible
-    const cx = lngToTileX(vp.centerLng, zClamped);
-    const cy = latToTileY(vp.centerLat, zClamped);
-    const tilesX = Math.ceil(w / TILE_SIZE) + 2;
-    const tilesY = Math.ceil(h / TILE_SIZE) + 2;
-    const startTileX = Math.floor(cx - tilesX / 2);
-    const startTileY = Math.floor(cy - tilesY / 2);
-    const endTileX = Math.ceil(cx + tilesX / 2);
-    const endTileY = Math.ceil(cy + tilesY / 2);
+  // ---- Tile drawing ----
 
-    // Offset to center tiles in viewport
-    const offsetX = (w / 2) - (cx - startTileX) * TILE_SIZE - (cx % 1) * TILE_SIZE;
-    const offsetY = (h / 2) - (cy - startTileY) * TILE_SIZE - (cy % 1) * TILE_SIZE;
+  function drawTiles(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number) {
+    const z = Math.max(0, Math.min(19, Math.floor(vp.zoom)));
+    const fracX = lngToTileX(vp.centerLng, z);
+    const fracY = latToTileY(vp.centerLat, z);
 
-    let tilesRequested = 0;
+    // Number of tiles needed to cover viewport
+    const numX = Math.ceil(w / TILE_SIZE) + 2;
+    const numY = Math.ceil(h / TILE_SIZE) + 2;
 
-    for (let tx = startTileX; tx <= endTileX; tx++) {
-      for (let ty = startTileY; ty <= endTileY; ty++) {
-        if (tx < 0 || ty < 0 || tx >= Math.pow(2, zClamped) || ty >= Math.pow(2, zClamped)) continue;
+    // The center of the viewport in tile-pixel space:
+    // fracX * TILE_SIZE = global pixel x of center lng at this zoom
+    // w/2 = viewport center x
+    // So tile (tx, ty) draws at: (tx - fracX) * TILE_SIZE + w/2, (ty - fracY) * TILE_SIZE + h/2
 
-        const drawX = offsetX + (tx - startTileX) * TILE_SIZE;
-        const drawY = offsetY + (ty - startTileY) * TILE_SIZE;
+    const startTx = Math.floor(fracX - numX / 2);
+    const startTy = Math.floor(fracY - numY / 2);
+    const endTx = Math.ceil(fracX + numX / 2);
+    const endTy = Math.ceil(fracY + numY / 2);
+    const maxTile = Math.pow(2, z);
 
-        const key = `${zClamped}/${tx}/${ty}`;
+    let needsRedraw = false;
+
+    for (let tx = startTx; tx <= endTx; tx++) {
+      for (let ty = startTy; ty <= endTy; ty++) {
+        if (tx < 0 || ty < 0 || tx >= maxTile || ty >= maxTile) continue;
+
+        // Pixel position: tile (tx,ty) starts at this screen position
+        const drawX = Math.round((tx - fracX) * TILE_SIZE + w / 2);
+        const drawY = Math.round((ty - fracY) * TILE_SIZE + h / 2);
+
+        const key = `${z}/${tx}/${ty}`;
         const cached = tileCache.get(key);
         if (cached && cached.complete) {
-          ctx.drawImage(cached, drawX, drawY, TILE_SIZE, TILE_SIZE);
+          try {
+            ctx.drawImage(cached, drawX, drawY, TILE_SIZE, TILE_SIZE);
+          } catch {
+            // ignore draw errors from tainted canvas
+          }
         } else if (!tileLoading.has(key)) {
-          tilesRequested++;
-          loadTile(zClamped, tx, ty).then((img) => {
-            if (img) {
-              tilesLoadedRef.current++;
-              scheduleDraw();
-            }
+          needsRedraw = true;
+          loadTile(z, tx, ty).then((img) => {
+            if (img) scheduleDraw();
           });
         }
       }
     }
 
-    // Draw tile boundaries (subtle grid) for tiles not yet loaded
-    ctx.strokeStyle = 'rgba(0,0,0,0.05)';
-    ctx.lineWidth = 0.5;
-    for (let tx = startTileX; tx <= endTileX + 1; tx++) {
-      const x = offsetX + (tx - startTileX) * TILE_SIZE;
-      if (x >= 0 && x <= w) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
-        ctx.stroke();
-      }
-    }
-    for (let ty = startTileY; ty <= endTileY + 1; ty++) {
-      const y = offsetY + (ty - startTileY) * TILE_SIZE;
-      if (y >= 0 && y <= h) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
+    // Draw subtle placeholder rectangles for pending tiles
+    if (needsRedraw) {
+      ctx.fillStyle = '#ddd8d0';
+      for (let tx = startTx; tx <= endTx; tx++) {
+        for (let ty = startTy; ty <= endTy; ty++) {
+          if (tx < 0 || ty < 0 || tx >= maxTile || ty >= maxTile) continue;
+          const key = `${z}/${tx}/${ty}`;
+          if (!tileCache.get(key)) {
+            const drawX = Math.round((tx - fracX) * TILE_SIZE + w / 2);
+            const drawY = Math.round((ty - fracY) * TILE_SIZE + h / 2);
+            ctx.fillRect(drawX, drawY, TILE_SIZE, TILE_SIZE);
+          }
+        }
       }
     }
   }
 
+  // ---- Offline vector data ----
+
   function drawOfflineData(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number, data: typeof dataRef.current) {
-    // Viewport bounds for culling
     const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-    const halfW = (w / 2) * mpp;
-    const halfH = (h / 2) * mpp;
-    const marginMeters = Math.max(halfW, halfH) * 1.3;
-    const marginDeg = marginMeters / 111000;
-    const vpMinLat = vp.centerLat - marginDeg;
-    const vpMaxLat = vp.centerLat + marginDeg;
-    const vpMinLng = vp.centerLng - marginDeg;
-    const vpMaxLng = vp.centerLng + marginDeg;
+    const marginDeg = (Math.max(w, h) * mpp * 1.3) / 111000;
+    const minLat = vp.centerLat - marginDeg;
+    const maxLat = vp.centerLat + marginDeg;
+    const minLng = vp.centerLng - marginDeg;
+    const maxLng = vp.centerLng + marginDeg;
 
-    // Draw roads — two passes: casing then fill
-    const roadsToDraw: { coords: [number, number][]; roadClass: number }[] = [];
-
+    const roads: { coords: [number, number][]; cls: number }[] = [];
     for (const region of data.regions) {
       for (const road of region.roads) {
         if (road.coords.length < 2) continue;
-        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-        for (let i = 0; i < road.coords.length; i += Math.max(1, Math.floor(road.coords.length / 8))) {
-          const lng = road.coords[i][0];
-          const lat = road.coords[i][1];
-          if (lat < minLat) minLat = lat;
-          if (lat > maxLat) maxLat = lat;
-          if (lng < minLng) minLng = lng;
-          if (lng > maxLng) maxLng = lng;
+        let inView = false;
+        for (const [lng, lat] of road.coords) {
+          if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
+            inView = true;
+            break;
+          }
         }
-        if (maxLat < vpMinLat || minLat > vpMaxLat || maxLng < vpMinLng || minLng > vpMaxLng) continue;
-        roadsToDraw.push({ coords: road.coords, roadClass: road.roadClass });
+        if (inView) roads.push({ coords: road.coords, cls: road.roadClass });
       }
     }
 
-    // Sort by road class (minor roads first, major roads on top)
-    roadsToDraw.sort((a, b) => a.roadClass - b.roadClass);
+    roads.sort((a, b) => a.cls - b.cls);
 
-    // Pass 1: Casing
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (const road of roadsToDraw) {
-      ctx.strokeStyle = ROAD_CASING[road.roadClass] ?? '#b0a898';
-      ctx.lineWidth = (ROAD_WIDTHS[road.roadClass] ?? 1.5) + 2;
+
+    // Casing pass
+    for (const road of roads) {
+      ctx.strokeStyle = ROAD_CASING[road.cls] ?? '#b0a898';
+      ctx.lineWidth = (ROAD_WIDTHS[road.cls] ?? 1.5) + 2;
       ctx.beginPath();
       for (let i = 0; i < road.coords.length; i++) {
-        const [lng, lat] = road.coords[i];
-        const p = project(lat, lng, vp);
+        const p = project(road.coords[i][1], road.coords[i][0], vp);
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
     }
 
-    // Pass 2: Fill
-    for (const road of roadsToDraw) {
-      ctx.strokeStyle = ROAD_COLORS[road.roadClass] ?? '#d0c8b8';
-      ctx.lineWidth = ROAD_WIDTHS[road.roadClass] ?? 1.5;
+    // Fill pass
+    for (const road of roads) {
+      ctx.strokeStyle = ROAD_COLORS[road.cls] ?? '#d0c8b8';
+      ctx.lineWidth = ROAD_WIDTHS[road.cls] ?? 1.5;
       ctx.beginPath();
       for (let i = 0; i < road.coords.length; i++) {
-        const [lng, lat] = road.coords[i];
-        const p = project(lat, lng, vp);
+        const p = project(road.coords[i][1], road.coords[i][0], vp);
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
     }
 
-    // Draw POIs
+    // POIs
     for (const region of data.regions) {
       for (const poi of region.pois) {
-        if (poi.lat < vpMinLat || poi.lat > vpMaxLat || poi.lng < vpMinLng || poi.lng > vpMaxLng) continue;
+        if (poi.lat < minLat || poi.lat > maxLat || poi.lng < minLng || poi.lng > maxLng) continue;
         const p = project(poi.lat, poi.lng, vp);
         if (p.x < -20 || p.x > w + 20 || p.y < -20 || p.y > h + 20) continue;
         ctx.fillStyle = POI_COLORS[poi.type] ?? '#fff';
@@ -394,19 +354,14 @@ export function CanvasMap({
     }
   }
 
-  function drawMarkers(
-    ctx: CanvasRenderingContext2D,
-    vp: Viewport,
-    w: number,
-    h: number,
-    data: typeof dataRef.current,
-  ) {
+  // ---- Markers ----
+
+  function drawMarkers(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number, data: typeof dataRef.current) {
     // Saved places
     for (const place of data.savedPlaces) {
       const p = project(place.latitude, place.longitude, vp);
       if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) continue;
-      const color = PLACE_COLORS[place.type] ?? '#9d4edd';
-      ctx.fillStyle = color;
+      ctx.fillStyle = PLACE_COLORS[place.type] ?? '#9d4edd';
       ctx.beginPath();
       ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
       ctx.fill();
@@ -415,13 +370,13 @@ export function CanvasMap({
       ctx.stroke();
     }
 
-    // Destination marker
+    // Destination
     if (data.destination) {
       const p = project(data.destination.lat, data.destination.lng, vp);
       drawPin(ctx, p.x, p.y, '#3a86ff');
     }
 
-    // Home marker
+    // Home
     if (data.home) {
       const p = project(data.home.latitude, data.home.longitude, vp);
       ctx.fillStyle = '#e63946';
@@ -464,11 +419,11 @@ export function CanvasMap({
       ctx.stroke();
     }
 
-    // User marker
+    // User position
     if (data.gpsFix && Number.isFinite(data.gpsFix.latitude) && Number.isFinite(data.gpsFix.longitude)) {
       const p = project(data.gpsFix.latitude, data.gpsFix.longitude, vp);
       const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-      const accRadius = Math.max(8, data.gpsFix.accuracy / mpp);
+      const accRadius = Math.max(8, (data.gpsFix.accuracy ?? 50) / mpp);
       ctx.fillStyle = 'rgba(58,134,255,0.12)';
       ctx.beginPath();
       ctx.arc(p.x, p.y, accRadius, 0, Math.PI * 2);
@@ -511,14 +466,28 @@ export function CanvasMap({
     ctx.fill();
   }
 
-  // Redraw on data change
+  // ---- Effects ----
+
+  // Init viewport
+  useEffect(() => {
+    if (initializedRef.current) return;
+    const center = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
+    if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
+      vpRef.current.centerLat = center.latitude;
+      vpRef.current.centerLng = center.longitude;
+      initializedRef.current = true;
+      scheduleDraw();
+    }
+  }, [gpsFix, home, scheduleDraw]);
+
+  // Redraw on data changes
   useEffect(() => {
     scheduleDraw();
   }, [regions, route, gpsFix, home, destination, savedPlaces, rotation, scheduleDraw]);
 
   // Recenter
   useEffect(() => {
-    if (recenterSignal > 0 && gpsFix) {
+    if (recenterSignal > 0 && gpsFix && Number.isFinite(gpsFix.latitude)) {
       vpRef.current.centerLat = gpsFix.latitude;
       vpRef.current.centerLng = gpsFix.longitude;
       userPannedRef.current = false;
@@ -526,16 +495,16 @@ export function CanvasMap({
     }
   }, [recenterSignal, gpsFix, scheduleDraw]);
 
-  // Follow mode
+  // Follow mode — track user
   useEffect(() => {
-    if (gpsFix && followMode && !userPannedRef.current) {
+    if (gpsFix && followMode && !userPannedRef.current && Number.isFinite(gpsFix.latitude)) {
       vpRef.current.centerLat = gpsFix.latitude;
       vpRef.current.centerLng = gpsFix.longitude;
       scheduleDraw();
     }
   }, [gpsFix, followMode, scheduleDraw]);
 
-  // Resize observer
+  // Resize
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -544,7 +513,7 @@ export function CanvasMap({
     return () => ro.disconnect();
   }, [scheduleDraw]);
 
-  // Animation loop for smooth zoom
+  // Zoom animation loop
   useEffect(() => {
     let active = true;
     function tick() {
@@ -556,9 +525,7 @@ export function CanvasMap({
         const eased = 1 - Math.pow(1 - t, 3);
         vpRef.current.zoom = anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased;
         scheduleDraw();
-        if (t >= 1) {
-          animRef.current = null;
-        }
+        if (t >= 1) animRef.current = null;
       }
       requestAnimationFrame(tick);
     }
@@ -574,21 +541,18 @@ export function CanvasMap({
     };
   }, []);
 
-  // Prune tile cache periodically
+  // Prune cache
   useEffect(() => {
-    const interval = setInterval(() => {
-      pruneTileCache();
-    }, 30000);
+    const interval = setInterval(pruneTileCache, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  // --- Gesture handlers ---
+  // ---- Gestures ----
 
-  const animateZoom = useCallback((targetZoom: number, duration = 200) => {
-    const clamped = Math.max(1, Math.min(19, targetZoom));
+  const animateZoom = useCallback((target: number, duration = 200) => {
     animRef.current = {
       fromZoom: vpRef.current.zoom,
-      toZoom: clamped,
+      toZoom: Math.max(1, Math.min(19, target)),
       start: performance.now(),
       duration,
     };
@@ -599,14 +563,16 @@ export function CanvasMap({
     pointersRef.current.set(e.pointerId, { id: e.pointerId, x: e.clientX, y: e.clientY });
 
     if (pointersRef.current.size === 1) {
-      dragRef.current = { x: e.clientX, y: e.clientY, moved: false, startTime: Date.now() };
+      dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
       if (onLongPress) {
         longPressTimerRef.current = setTimeout(() => {
           if (dragRef.current && !dragRef.current.moved) {
             const rect = canvasRef.current?.getBoundingClientRect();
             if (rect) {
-              const px = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-              const { lat, lng } = unproject(px, vpRef.current);
+              const { lat, lng } = unproject(
+                { x: e.clientX - rect.left, y: e.clientY - rect.top },
+                vpRef.current,
+              );
               onLongPress(lat, lng);
             }
           }
@@ -618,8 +584,10 @@ export function CanvasMap({
         longPressTimerRef.current = null;
       }
       const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      pinchRef.current = { dist, zoom: vpRef.current.zoom, cx: (pts[0].x + pts[1].x) / 2, cy: (pts[0].y + pts[1].y) / 2 };
+      pinchRef.current = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        zoom: vpRef.current.zoom,
+      };
       dragRef.current = null;
     }
   };
@@ -631,18 +599,19 @@ export function CanvasMap({
       existing.y = e.clientY;
     }
 
+    // Pinch zoom
     if (pointersRef.current.size === 2 && pinchRef.current) {
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       const scale = dist / pinchRef.current.dist;
-      const newZoom = pinchRef.current.zoom + Math.log2(scale);
-      vpRef.current.zoom = Math.max(1, Math.min(19, newZoom));
+      vpRef.current.zoom = Math.max(1, Math.min(19, pinchRef.current.zoom + Math.log2(scale)));
       userPannedRef.current = true;
       animRef.current = null;
       scheduleDraw();
       return;
     }
 
+    // Pan
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.x;
     const dy = e.clientY - dragRef.current.y;
@@ -658,8 +627,8 @@ export function CanvasMap({
 
     const vp = vpRef.current;
     const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-    vp.centerLng -= (dx * mpp);
-    vp.centerLat += (dy * mpp);
+    vp.centerLng -= dx * mpp;
+    vp.centerLat += dy * mpp;
     vp.centerLat = Math.max(-85, Math.min(85, vp.centerLat));
     userPannedRef.current = true;
     animRef.current = null;
@@ -674,20 +643,18 @@ export function CanvasMap({
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
-
-    if (pointersRef.current.size < 2) {
-      pinchRef.current = null;
-    }
+    if (pointersRef.current.size < 2) pinchRef.current = null;
 
     if (pointersRef.current.size === 0) {
       const wasDrag = dragRef.current?.moved;
       dragRef.current = null;
-
       if (!wasDrag && onTap) {
         const rect = canvasRef.current?.getBoundingClientRect();
         if (rect) {
-          const px = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-          const { lat, lng } = unproject(px, vpRef.current);
+          const { lat, lng } = unproject(
+            { x: e.clientX - rect.left, y: e.clientY - rect.top },
+            vpRef.current,
+          );
           onTap(lat, lng);
         }
       }
@@ -696,16 +663,15 @@ export function CanvasMap({
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.5 : 0.5;
-    animateZoom(vpRef.current.zoom + delta, 150);
+    animateZoom(vpRef.current.zoom + (e.deltaY > 0 ? -0.5 : 0.5), 150);
   };
 
-  const onDoubleClick = (e: React.MouseEvent) => {
+  const onDoubleClick = () => {
     animateZoom(vpRef.current.zoom + 1, 250);
   };
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
+    <div className="relative h-full w-full overflow-hidden">
       <canvas
         ref={canvasRef}
         className="h-full w-full touch-none select-none"
@@ -721,17 +687,4 @@ export function CanvasMap({
       </div>
     </div>
   );
-}
-
-// ---- Tile coordinate helpers ----
-
-function lngToTileX(lng: number, z: number): number {
-  return ((lng + 180) / 360) * Math.pow(2, z);
-}
-
-function latToTileY(lat: number, z: number): number {
-  const latRad = (lat * Math.PI) / 180;
-  return (
-    (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2
-  ) * Math.pow(2, z);
 }
