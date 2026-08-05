@@ -25,6 +25,7 @@ import { CompassFallback } from '@/navigation/ui/CompassFallback';
 import { EmergencyFallback } from '@/navigation/ui/EmergencyFallback';
 import { OfflineMapsPanel } from '@/navigation/ui/OfflineMapsPanel';
 import { HomeSetup } from '@/navigation/ui/HomeSetup';
+import { Tulip } from '@/ui/components/Tulip';
 import { formatDistance, formatDuration } from '@/navigation/gps/gps';
 import type { TravelMode, InstructionType } from '@/navigation/domain/types';
 
@@ -91,7 +92,9 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
 
       {/* Needs home setup */}
       {needsSetup ? (
-        <div className="flex flex-1 flex-col items-center justify-center p-6">
+        <div className="relative flex flex-1 flex-col items-center justify-center p-6">
+          <Tulip size={28} className="absolute left-[15%] bottom-[18%] -rotate-12 text-accent-200 opacity-50" />
+          <Tulip size={22} className="absolute right-[18%] bottom-[20%] rotate-12 text-accent-200 opacity-40" />
           <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-100 text-accent-500">
             <Home size={36} />
           </div>

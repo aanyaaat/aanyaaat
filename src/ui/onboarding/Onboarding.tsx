@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 import { applyTheme } from '@/ui/theme/theme';
+import { Tulip } from '@/ui/components/Tulip';
 import type { ThemeMode } from '@/domain/types';
 
 const ONBOARDED_KEY = 'aanyaa_onboarded';
@@ -76,7 +77,11 @@ function Splash({ onContinue }: { onContinue: () => void }) {
   }, [onContinue]);
 
   return (
-    <div className="flex h-screen w-screen flex-col items-center justify-center bg-surface">
+    <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-surface overflow-hidden">
+      <Tulip size={36} className="absolute left-[12%] bottom-[14%] -rotate-12 text-accent-300 opacity-70" />
+      <Tulip size={28} className="absolute left-[20%] bottom-[12%] rotate-6 text-accent-400 opacity-50" />
+      <Tulip size={32} className="absolute right-[14%] bottom-[15%] rotate-12 text-accent-300 opacity-60" />
+      <Tulip size={24} className="absolute right-[22%] bottom-[13%] -rotate-6 text-accent-400 opacity-40" />
       <div className="flex h-28 w-28 items-center justify-center rounded-full bg-accent-100 text-accent-400 shadow-float aanyaa-breathe">
         <Heart size={56} fill="currentColor" />
       </div>
@@ -246,10 +251,12 @@ function GetMeHomeIntro({ onNext, onSkip }: { onNext: () => void; onSkip: () => 
 
 function OnboardingShell({ children, onSkip }: { children: React.ReactNode; onSkip: () => void }) {
   return (
-    <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-surface px-6 text-center animate-fade-in">
+    <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-surface px-6 text-center animate-fade-in overflow-hidden">
+      <Tulip size={28} className="absolute left-[8%] bottom-[10%] -rotate-12 text-accent-200 opacity-50" />
+      <Tulip size={22} className="absolute right-[10%] bottom-[12%] rotate-12 text-accent-200 opacity-40" />
       <button
         onClick={onSkip}
-        className="absolute right-6 top-6 rounded-full px-4 py-2 text-sm text-ink-faint transition-colors hover:bg-surface-subtle hover:text-ink"
+        className="absolute right-6 top-6 z-10 rounded-full px-4 py-2 text-sm text-ink-faint transition-colors hover:bg-surface-subtle hover:text-ink"
       >
         Skip
       </button>

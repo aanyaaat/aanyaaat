@@ -101,8 +101,8 @@ export interface AppearanceSettings {
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
-  theme: 'dark',
-  accent: 'blue',
+  theme: 'light',
+  accent: 'violet',
   dynamicColor: true,
   highContrast: false,
   largeFonts: false,

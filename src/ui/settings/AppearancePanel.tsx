@@ -12,12 +12,12 @@ import { useApp } from '@/state/AppStore';
 import type { AccentSeed, ThemeMode } from '@/domain/types';
 
 const ACCENTS: { id: AccentSeed; label: string; color: string }[] = [
+  { id: 'violet', label: 'Violet', color: 'rgb(178 150 230)' },
   { id: 'rose', label: 'Rose', color: 'rgb(247 200 216)' },
   { id: 'blue', label: 'Blue', color: 'rgb(40 120 200)' },
   { id: 'green', label: 'Green', color: 'rgb(60 168 112)' },
   { id: 'teal', label: 'Teal', color: 'rgb(26 168 164)' },
   { id: 'amber', label: 'Amber', color: 'rgb(240 158 12)' },
-  { id: 'violet', label: 'Violet', color: 'rgb(142 110 208)' },
 ];
 
 const THEMES: { id: ThemeMode; label: string; icon: React.ReactNode }[] = [

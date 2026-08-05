@@ -5,8 +5,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Poppins', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['"DM Serif Display"', 'Poppins', 'serif'],
+        sans: ['Nunito', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['Quicksand', 'Nunito', 'sans-serif'],
       },
       colors: {
         accent: {
@@ -49,11 +49,11 @@ export default {
         pill: '999px',
       },
       boxShadow: {
-        soft: '0 1px 2px rgb(0 0 0 / 0.03), 0 6px 24px rgb(247 200 216 / 0.10)',
-        float: '0 12px 40px rgb(181 131 141 / 0.12)',
-        card: '0 2px 12px rgb(181 131 141 / 0.06)',
-        'card-hover': '0 8px 28px rgb(181 131 141 / 0.10)',
-        input: '0 2px 16px rgb(181 131 141 / 0.08)',
+        soft: '0 1px 2px rgb(0 0 0 / 0.03), 0 6px 24px rgb(178 150 230 / 0.10)',
+        float: '0 12px 40px rgb(152 118 212 / 0.14)',
+        card: '0 2px 12px rgb(152 118 212 / 0.06)',
+        'card-hover': '0 8px 28px rgb(152 118 212 / 0.12)',
+        input: '0 2px 16px rgb(152 118 212 / 0.08)',
       },
       keyframes: {
         'fade-in': {

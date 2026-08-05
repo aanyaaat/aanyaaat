@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 import { useNav } from '@/navigation/state/NavStore';
+import { Tulip } from '@/ui/components/Tulip';
 import type { Chat, ExportFormat } from '@/domain/types';
 
 export function Sidebar({ onClose, onOpenNav }: { onClose?: () => void; onOpenNav?: () => void }) {
@@ -68,8 +69,9 @@ export function Sidebar({ onClose, onOpenNav }: { onClose?: () => void; onOpenNa
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4">
         <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-200 text-accent-700">
+          <div className="relative flex h-7 w-7 items-center justify-center rounded-full bg-accent-200 text-accent-700">
             <Heart size={14} fill="currentColor" />
+            <Tulip size={10} className="absolute -right-1 -top-1 text-accent-400" />
           </div>
           <span className="font-display text-base text-ink">Aanyaa</span>
         </div>

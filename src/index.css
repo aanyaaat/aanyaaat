@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,71 +6,71 @@
 
 :root {
   color-scheme: light;
-  /* Aanyaa warm palette */
-  --surface: 255 248 251;
+  /* Aanyaa cheerful lavender palette */
+  --surface: 252 248 253;
   --surface-raised: 255 255 255;
-  --surface-overlay: 255 255 255;
-  --surface-subtle: 255 241 245;
-  --ink: 55 55 55;
-  --ink-muted: 122 122 122;
-  --ink-faint: 168 168 168;
-  --line: 240 220 227;
-  --line-strong: 229 197 209;
-  --success: 168 213 186;
-  --warning: 255 209 102;
-  --error: 242 132 130;
-  --scrollbar: 247 200 216;
+  --surface-overlay: 255 252 255;
+  --surface-subtle: 247 240 251;
+  --ink: 62 50 68;
+  --ink-muted: 118 104 128;
+  --ink-faint: 175 160 184;
+  --line: 234 224 242;
+  --line-strong: 216 198 230;
+  --success: 124 182 143;
+  --warning: 255 200 120;
+  --error: 236 120 130;
+  --scrollbar: 220 195 234;
 }
 
 .dark {
   color-scheme: dark;
-  --surface: 28 24 26;
-  --surface-raised: 38 32 35;
-  --surface-overlay: 46 38 42;
-  --surface-subtle: 52 42 46;
-  --ink: 240 234 236;
-  --ink-muted: 188 178 182;
-  --ink-faint: 138 128 132;
-  --line: 60 48 52;
-  --line-strong: 84 66 72;
-  --success: 168 213 186;
-  --warning: 255 209 102;
-  --error: 242 132 130;
-  --scrollbar: 160 120 136;
+  --surface: 30 24 36;
+  --surface-raised: 42 34 50;
+  --surface-overlay: 52 42 60;
+  --surface-subtle: 58 46 66;
+  --ink: 242 236 248;
+  --ink-muted: 192 180 202;
+  --ink-faint: 140 126 152;
+  --line: 68 54 80;
+  --line-strong: 94 74 110;
+  --success: 124 182 143;
+  --warning: 255 200 120;
+  --error: 236 120 130;
+  --scrollbar: 150 120 172;
 }
 
 .amoled {
   color-scheme: dark;
   --surface: 0 0 0;
-  --surface-raised: 12 8 10;
-  --surface-overlay: 20 14 18;
-  --surface-subtle: 28 20 24;
-  --ink: 240 234 236;
-  --ink-muted: 188 178 182;
-  --ink-faint: 130 120 124;
-  --line: 38 28 32;
-  --line-strong: 58 44 50;
-  --success: 168 213 186;
-  --warning: 255 209 102;
-  --error: 242 132 130;
-  --scrollbar: 140 100 116;
+  --surface-raised: 14 8 20;
+  --surface-overlay: 22 14 28;
+  --surface-subtle: 30 20 38;
+  --ink: 242 236 248;
+  --ink-muted: 192 180 202;
+  --ink-faint: 132 118 144;
+  --line: 42 30 52;
+  --line-strong: 64 46 78;
+  --success: 124 182 143;
+  --warning: 255 200 120;
+  --error: 236 120 130;
+  --scrollbar: 130 100 152;
 }
 
-/* Aanyaa accent — soft rose. Overridden at runtime when user picks a seed color. */
+/* Aanyaa accent — cheerful violet. Overridden at runtime when user picks a seed color. */
 :root,
 .dark,
 .amoled {
-  --accent-50: 252 244 247;
-  --accent-100: 248 232 239;
-  --accent-200: 247 200 216;
-  --accent-300: 233 165 181;
-  --accent-400: 181 131 141;
-  --accent-500: 181 131 141;
-  --accent-600: 165 110 122;
-  --accent-700: 140 88 98;
-  --accent-800: 112 70 80;
-  --accent-900: 90 56 66;
-  --accent-950: 60 36 44;
+  --accent-50: 248 245 252;
+  --accent-100: 240 235 250;
+  --accent-200: 228 215 246;
+  --accent-300: 208 185 238;
+  --accent-400: 178 150 230;
+  --accent-500: 152 118 212;
+  --accent-600: 134 92 192;
+  --accent-700: 118 74 172;
+  --accent-800: 98 58 144;
+  --accent-900: 82 48 120;
+  --accent-950: 52 26 80;
 }
 
 html, body, #root {
@@ -87,7 +87,7 @@ body {
   margin: 0;
   background: rgb(var(--surface));
   color: rgb(var(--ink));
-  font-family: 'Poppins', ui-sans-serif, system-ui, sans-serif;
+  font-family: 'Nunito', ui-sans-serif, system-ui, sans-serif;
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -95,7 +95,8 @@ body {
 }
 
 .font-display {
-  font-family: 'DM Serif Display', 'Poppins', serif;
+  font-family: 'Quicksand', 'Nunito', sans-serif;
+  font-weight: 600;
 }
 
 * {
@@ -147,7 +148,7 @@ body {
   text-underline-offset: 2px;
 }
 .md-content code:not(pre code) {
-  font-family: 'Poppins', ui-monospace, monospace;
+  font-family: 'Nunito', ui-monospace, monospace;
   font-size: 0.85em;
   background: rgb(var(--surface-subtle));
   padding: 0.12rem 0.4rem;
