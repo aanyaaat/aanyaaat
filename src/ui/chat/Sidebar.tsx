@@ -215,7 +215,7 @@ export function Sidebar({ onClose, onOpenNav }: { onClose?: () => void; onOpenNa
               Setup
             </span>
           )}
-          {nav.home && nav.region && (
+          {nav.home && nav.regions.length > 0 && (
             <span className="shrink-0 h-2 w-2 rounded-full bg-success ring-2 ring-surface-raised" />
           )}
         </button>

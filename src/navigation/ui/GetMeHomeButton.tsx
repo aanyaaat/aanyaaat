@@ -4,7 +4,7 @@ import { useNav } from '@/navigation/state/NavStore';
 export function GetMeHomeButton({ onClick }: { onClick: () => void }) {
   const nav = useNav();
   const hasHome = nav.home !== null;
-  const hasRegion = nav.region !== null;
+  const hasRegion = nav.regions.length > 0;
 
   return (
     <button

@@ -1,12 +1,14 @@
 import type { RouteResult, TravelMode } from '@/navigation/domain/types';
 
 /**
- * Online routing provider using OSRM public demo server.
- * This is an ENHANCEMENT only — the app must not depend on it.
- * If it fails, the offline router takes over.
+ * Online routing using OSRM public servers.
+ * Multiple endpoints are tried in order for reliability.
  */
 
-const OSRM_ENDPOINT = 'https://routing.openstreetmap.de/routed';
+const OSRM_ENDPOINTS = [
+  'https://routing.openstreetmap.de/routed',
+  'https://router.project-osrm.org',
+];
 
 export async function routeOnline(
   startLat: number,
@@ -15,29 +17,46 @@ export async function routeOnline(
   destLng: number,
   mode: TravelMode,
 ): Promise<RouteResult | null> {
+  // Validate inputs
+  if (!Number.isFinite(startLat) || !Number.isFinite(startLng) ||
+      !Number.isFinite(destLat) || !Number.isFinite(destLng)) {
+    return null;
+  }
+
   const profile = mode === 'drive' ? 'car' : mode === 'bike' ? 'bike' : 'foot';
-  const url = `${OSRM_ENDPOINT}/${profile}/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`;
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`OSRM ${res.status}`);
-  const data = await res.json();
+  let lastErr: Error | null = null;
 
-  if (!data.routes || data.routes.length === 0) return null;
-  const r = data.routes[0];
+  for (const endpoint of OSRM_ENDPOINTS) {
+    try {
+      const url = `${endpoint}/${profile}/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`OSRM ${res.status}`);
+      const data = await res.json();
 
-  const coordinates: { lat: number; lng: number }[] = (r.geometry.coordinates as [number, number][]).map(
-    ([lng, lat]) => ({ lat, lng }),
-  );
+      if (!data.routes || data.routes.length === 0) continue;
 
-  const instructions = buildOsrmInstructions(r.legs ?? []);
+      const r = data.routes[0];
+      const coordinates: { lat: number; lng: number }[] = (r.geometry.coordinates as [number, number][]).map(
+        ([lng, lat]) => ({ lat, lng }),
+      );
 
-  return {
-    coordinates,
-    distanceMeters: Math.round(r.distance),
-    durationSeconds: Math.round(r.duration),
-    instructions,
-    mode,
-  };
+      const instructions = buildOsrmInstructions(r.legs ?? []);
+
+      return {
+        coordinates,
+        distanceMeters: Math.round(r.distance),
+        durationSeconds: Math.round(r.duration),
+        instructions,
+        mode,
+      };
+    } catch (e) {
+      lastErr = e as Error;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  return null;
 }
 
 function buildOsrmInstructions(

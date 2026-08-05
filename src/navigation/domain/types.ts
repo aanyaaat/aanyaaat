@@ -1,4 +1,4 @@
-/** Navigation domain types for the GET ME HOME feature. */
+/** Navigation domain types for the offline mapping and navigation system. */
 
 export interface HomeLocation {
   label: string;
@@ -36,16 +36,20 @@ export type InstructionType =
   | 'sharp-right'
   | 'straight'
   | 'arrive'
-  | 'uturn';
+  | 'uturn'
+  | 'merge'
+  | 'roundabout';
 
 export interface TurnInstruction {
   type: InstructionType;
   roadName: string;
   distanceMeters: number;
-  /** Cumulative distance from start to this instruction, in meters. */
   cumulativeMeters: number;
-  /** Coordinate where this maneuver begins. */
   point: { lat: number; lng: number };
+  /** Spoken instruction text for TTS. */
+  spoken?: string;
+  /** Lane guidance info if available. */
+  lanes?: string;
 }
 
 export interface RouteResult {
@@ -54,19 +58,21 @@ export interface RouteResult {
   durationSeconds: number;
   instructions: TurnInstruction[];
   mode: TravelMode;
-  /** When the route only covers part of the journey (outside map coverage), this describes the remainder. */
+  /** Route type: fastest or shortest. */
+  routeType?: 'fastest' | 'shortest';
+  /** When the route only covers part of the journey. */
   partial?: PartialRouteInfo;
+  /** Alternative routes if available. */
+  alternatives?: RouteResult[];
 }
 
 export interface PartialRouteInfo {
-  /** Straight-line distance from the end of the mapped route to the final destination, in meters. */
   remainingStraightMeters: number;
-  /** Compass direction from the end of the mapped route to the final destination. */
   bearingDeg: number;
-  /** Cardinal label (e.g. "NE") for the bearing. */
   cardinal: string;
-  /** Why the route is partial — typically "outside-mapped-area". */
   reason: string;
+  /** Distance from start to the end of mapped coverage. */
+  coveredMeters: number;
 }
 
 export type RegionPresetKm = 5 | 10 | 20 | 30;
@@ -79,6 +85,8 @@ export interface OfflineRegion {
   radiusKm: number;
   createdAt: number;
   updatedAt: number;
+  /** Bounding box for quick coverage checks. */
+  bbox: { south: number; west: number; north: number; east: number };
   /** Road graph nodes (id → [lat, lng]). */
   nodes: Record<number, [number, number]>;
   /** Edges: [fromId, toId, roadClass, name?]. */
@@ -89,6 +97,8 @@ export interface OfflineRegion {
   pois: Poi[];
   /** Size in bytes (approx). */
   sizeBytes: number;
+  /** Version for incremental updates. */
+  version: number;
 }
 
 export interface GeoJsonRoad {
@@ -117,3 +127,34 @@ export type NavPhase =
 
 export type BearingCardinal =
   | 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
+
+/** Saved place types for favorites, recent destinations, etc. */
+export type SavedPlaceType = 'home' | 'work' | 'favorite' | 'recent';
+
+export interface SavedPlace {
+  id: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  type: SavedPlaceType;
+  createdAt: number;
+}
+
+/** Download progress info for the download manager. */
+export interface DownloadProgress {
+  phase: 'idle' | 'downloading' | 'parsing' | 'saving' | 'done' | 'error' | 'paused';
+  message: string;
+  bytesReceived: number;
+  totalBytes: number | null;
+  percent: number;
+  speed: number; // bytes/sec
+  etaSeconds: number | null;
+  regionId: string;
+}
+
+/** Navigation settings for routing preferences. */
+export interface RoutingPreferences {
+  avoidTolls: boolean;
+  avoidHighways: boolean;
+  routeType: 'fastest' | 'shortest';
+}

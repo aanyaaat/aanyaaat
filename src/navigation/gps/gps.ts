@@ -9,6 +9,13 @@ export interface GpsOptions {
   onStatus: (status: GpsStatus) => void;
 }
 
+/**
+ * GPS watcher with smoothing, heading interpolation, and quick recovery.
+ * - Smooths position using a weighted moving average (last 3 fixes)
+ * - Interpolates heading from position changes when device heading is null
+ * - Tracks stale status with a timer
+ * - Recovers quickly after temporary signal loss
+ */
 export function startGpsWatch(opts: GpsOptions): GpsWatcher {
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
     opts.onStatus('unavailable');
@@ -19,20 +26,58 @@ export function startGpsWatch(opts: GpsOptions): GpsWatcher {
 
   let lastFixTime = 0;
   let staleTimer: ReturnType<typeof setInterval> | null = null;
+  const history: GpsFix[] = [];
+  const MAX_HISTORY = 5;
+  let lastInterpHeading: number | null = null;
 
   const id = navigator.geolocation.watchPosition(
     (pos) => {
       lastFixTime = Date.now();
-      const fix: GpsFix = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+
+      // Reject NaN/Infinity coordinates — they poison the smoothing buffer
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const rawFix: GpsFix = {
+        latitude: lat,
+        longitude: lng,
+        accuracy: pos.coords.accuracy ?? 50,
         heading: pos.coords.heading,
         speed: pos.coords.speed,
         timestamp: pos.timestamp,
       };
-      opts.onFix(fix);
-      opts.onStatus(fix.accuracy > 50 ? 'weak' : 'found');
+
+      // Smooth position using weighted moving average
+      history.push(rawFix);
+      if (history.length > MAX_HISTORY) history.shift();
+
+      const smoothed = smoothFix(history, lastInterpHeading);
+
+      // Interpolate heading from position changes if device heading is null
+      if (smoothed.heading === null || isNaN(smoothed.heading)) {
+        if (history.length >= 2) {
+          const prev = history[history.length - 2];
+          const curr = history[history.length - 1];
+          const dist = haversineMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+          // Only interpolate heading if we've moved enough (5m) to be meaningful
+          if (dist > 5) {
+            const interpHeading = bearingDeg(prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+            lastInterpHeading = interpHeading;
+            smoothed.heading = interpHeading;
+          } else if (lastInterpHeading !== null) {
+            smoothed.heading = lastInterpHeading;
+          }
+        }
+      } else {
+        lastInterpHeading = smoothed.heading;
+      }
+
+      // Final safety check: never emit NaN
+      if (Number.isFinite(smoothed.latitude) && Number.isFinite(smoothed.longitude)) {
+        opts.onFix(smoothed);
+        opts.onStatus(smoothed.accuracy > 50 ? 'weak' : 'found');
+      }
 
       if (staleTimer) clearInterval(staleTimer);
       staleTimer = setInterval(() => {
@@ -47,8 +92,12 @@ export function startGpsWatch(opts: GpsOptions): GpsWatcher {
       } else if (err.code === err.POSITION_UNAVAILABLE) {
         opts.onStatus('unavailable');
       } else if (err.code === err.TIMEOUT) {
-        // Timeout is often temporary — don't mark as permanently unavailable
-        opts.onStatus('locating');
+        // Timeout is often temporary — keep trying, don't mark as unavailable
+        if (lastFixTime === 0) {
+          opts.onStatus('locating');
+        } else if (Date.now() - lastFixTime > 10000) {
+          opts.onStatus('stale');
+        }
       } else {
         opts.onStatus('unavailable');
       }
@@ -85,6 +134,128 @@ export async function getSingleFix(timeoutMs = 15000): Promise<GpsFix> {
       { enableHighAccuracy: true, maximumAge: 5000, timeout: timeoutMs },
     );
   });
+}
+
+/**
+ * Smooth a GPS fix using a weighted moving average.
+ * Most recent fix has the highest weight. Accuracy is taken as the
+ * median (not averaged) to avoid a single bad reading inflating the estimate.
+ */
+function smoothFix(history: GpsFix[], lastHeading: number | null): GpsFix {
+  if (history.length === 1) return { ...history[0] };
+
+  // Filter out any NaN/Infinity entries (defensive)
+  const valid = history.filter(
+    (h) => Number.isFinite(h.latitude) && Number.isFinite(h.longitude),
+  );
+  if (valid.length === 0) return { ...history[history.length - 1] };
+  if (valid.length === 1) return { ...valid[0] };
+
+  // Weighted average: most recent gets highest weight
+  const weights = [1, 2, 3].slice(-valid.length).reverse();
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+
+  let lat = 0, lng = 0;
+  for (let i = 0; i < valid.length; i++) {
+    lat += valid[i].latitude * weights[i];
+    lng += valid[i].longitude * weights[i];
+  }
+  lat /= totalWeight;
+  lng /= totalWeight;
+
+  // Use the most recent accuracy
+  const accuracy = valid[valid.length - 1].accuracy;
+
+  const last = valid[valid.length - 1];
+  let heading = last.heading;
+  if (heading === null || isNaN(heading)) {
+    heading = lastHeading;
+  }
+
+  return {
+    latitude: lat,
+    longitude: lng,
+    accuracy,
+    heading,
+    speed: last.speed,
+    timestamp: last.timestamp,
+  };
+}
+
+/**
+ * Snap a GPS fix to the nearest point on a route line.
+ * Returns the snapped position and the index of the nearest route segment.
+ */
+export function snapToRoute(
+  fix: GpsFix,
+  routeCoords: { lat: number; lng: number }[],
+): { lat: number; lng: number; segmentIndex: number; distanceFromRoute: number } | null {
+  if (routeCoords.length < 2) return null;
+
+  let minDist = Infinity;
+  let snappedLat = fix.latitude;
+  let snappedLng = fix.longitude;
+  let bestIdx = 0;
+
+  for (let i = 0; i < routeCoords.length - 1; i++) {
+    const a = routeCoords[i];
+    const b = routeCoords[i + 1];
+    const snap = projectPointToSegment(fix.latitude, fix.longitude, a.lat, a.lng, b.lat, b.lng);
+    if (snap.distance < minDist) {
+      minDist = snap.distance;
+      snappedLat = snap.lat;
+      snappedLng = snap.lng;
+      bestIdx = i;
+    }
+  }
+
+  return {
+    lat: snappedLat,
+    lng: snappedLng,
+    segmentIndex: bestIdx,
+    distanceFromRoute: minDist,
+  };
+}
+
+/**
+ * Project a point onto a line segment and return the nearest point + distance.
+ * All parameters are in lat/lng: px=lat, py=lng, a/b are [lat, lng].
+ */
+function projectPointToSegment(
+  pLat: number,
+  pLng: number,
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): { lat: number; lng: number; distance: number } {
+  // Project in a simple equirectangular approximation (good enough for short segments)
+  const latMid = (aLat + bLat) * Math.PI / 360;
+  const cosLatMid = Math.cos(latMid);
+
+  // Convert to approximate x/y in meters
+  const px = pLng * cosLatMid;
+  const py = pLat;
+  const ax = aLng * cosLatMid;
+  const ay = aLat;
+  const bx = bLng * cosLatMid;
+  const by = bLat;
+
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+
+  let t = 0;
+  if (lenSq > 0) {
+    t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+  }
+
+  const projLat = aLat + t * (bLat - aLat);
+  const projLng = aLng + t * (bLng - aLng);
+  const dist = haversineMeters(pLat, pLng, projLat, projLng);
+
+  return { lat: projLat, lng: projLng, distance: dist };
 }
 
 /** Haversine distance in meters. */

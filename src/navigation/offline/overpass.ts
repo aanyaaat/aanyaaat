@@ -29,6 +29,7 @@ interface OverpassWay {
   id: number;
   nodes: number[];
   tags?: Record<string, string>;
+  geometry?: { lat: number; lon: number }[];
 }
 
 export async function fetchOsmBbox(
@@ -36,10 +37,9 @@ export async function fetchOsmBbox(
   west: number,
   north: number,
   east: number,
-  onProgress: (msg: string) => void,
+  onProgress: (msg: string, bytesReceived?: number, totalBytes?: number | null) => void,
 ): Promise<OfflineRegion> {
   const bbox = `${south},${west},${north},${east}`;
-  // Request highways (roads) + emergency/transit amenities
   const query = `
     [out:json][timeout:90];
     (
@@ -72,11 +72,37 @@ export async function fetchOsmBbox(
         body: 'data=' + encodeURIComponent(query),
       });
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
-      data = (await res.json()) as { elements: (OverpassNode | OverpassWay)[] };
+
+      // Stream progress via Content-Length if available
+      const contentLength = res.headers.get('Content-Length');
+      const total = contentLength ? parseInt(contentLength, 10) : null;
+
+      if (res.body && typeof ReadableStream !== 'undefined') {
+        // Read the stream to track progress
+        const reader = res.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+            onProgress(`Downloading… ${formatBytes(received)}`, received, total);
+          }
+        }
+        const text = new TextDecoder().decode(concatChunks(chunks));
+        data = JSON.parse(text);
+      } else {
+        onProgress('Downloading…');
+        data = (await res.json()) as { elements: (OverpassNode | OverpassWay)[] };
+      }
+
       lastErr = null;
       break;
     } catch (e) {
       lastErr = e as Error;
+      onProgress(`Retrying with alternate server…`);
     }
   }
 
@@ -89,7 +115,6 @@ export async function fetchOsmBbox(
   onProgress(`Received ${data.elements.length} elements. Parsing…`);
 
   const nodes = new Map<number, [number, number]>();
-  const nodeTags = new Map<number, Record<string, string>>();
   const ways: OverpassWay[] = [];
   const poiNodes: OverpassNode[] = [];
 
@@ -97,29 +122,16 @@ export async function fetchOsmBbox(
     if (el.type === 'node') {
       nodes.set(el.id, [el.lat, el.lon]);
       if (el.tags) {
-        nodeTags.set(el.id, el.tags);
-        if (
-          el.tags.amenity === 'hospital' ||
-          el.tags.amenity === 'police' ||
-          el.tags.railway === 'station' ||
-          el.tags.railway === 'subway_entrance' ||
-          el.tags.railway === 'tram_stop' ||
-          el.tags.public_transport === 'station' ||
-          el.tags.public_transport === 'platform' ||
-          el.tags.highway === 'bus_stop' ||
-          el.tags.bus === 'yes'
-        ) {
+        if (isPoiNode(el.tags)) {
           poiNodes.push(el);
         }
       }
     } else if (el.type === 'way') {
       ways.push(el);
-      // For ways with geometry (out geom), nodes are included with coords
-      if ((el as OverpassWay & { geometry?: { lat: number; lon: number }[] }).geometry) {
-        const geom = (el as OverpassWay & { geometry: { lat: number; lon: number }[] }).geometry;
+      if (el.geometry) {
         for (let i = 0; i < el.nodes.length; i++) {
           if (!nodes.has(el.nodes[i])) {
-            nodes.set(el.nodes[i], [geom[i].lat, geom[i].lon]);
+            nodes.set(el.nodes[i], [el.geometry[i].lat, el.geometry[i].lon]);
           }
         }
       }
@@ -128,7 +140,6 @@ export async function fetchOsmBbox(
 
   onProgress('Extracting roads…');
 
-  // Build road graph + render geometry
   const graphNodes: Record<number, [number, number]> = {};
   const graphEdges: [number, number, number, string?][] = [];
   const roads: GeoJsonRoad[] = [];
@@ -147,14 +158,13 @@ export async function fetchOsmBbox(
       const n = nodes.get(nodeId);
       if (!n) continue;
       graphNodes[nodeId] = n;
-      coords.push([n[1], n[0]]); // [lng, lat]
+      coords.push([n[1], n[0]]);
     }
 
     if (coords.length < 2) continue;
 
     roads.push({ coords, roadClass, name });
 
-    // Build edges between consecutive nodes
     const oneway = tags.oneway === 'yes';
     for (let i = 0; i < way.nodes.length - 1; i++) {
       const a = way.nodes[i];
@@ -192,7 +202,6 @@ export async function fetchOsmBbox(
     });
   }
 
-  // Estimate size
   const sizeBytes =
     Object.keys(graphNodes).length * 24 +
     graphEdges.length * 32 +
@@ -207,16 +216,31 @@ export async function fetchOsmBbox(
     radiusKm: 0,
     createdAt: 0,
     updatedAt: 0,
+    bbox: { south, west, north, east },
     nodes: graphNodes,
     edges: graphEdges,
     roads,
     pois,
     sizeBytes,
+    version: 1,
   };
 }
 
+function isPoiNode(tags: Record<string, string>): boolean {
+  return (
+    tags.amenity === 'hospital' ||
+    tags.amenity === 'police' ||
+    tags.railway === 'station' ||
+    tags.railway === 'subway_entrance' ||
+    tags.railway === 'tram_stop' ||
+    tags.public_transport === 'station' ||
+    tags.public_transport === 'platform' ||
+    tags.highway === 'bus_stop' ||
+    tags.bus === 'yes'
+  );
+}
+
 function classifyRoad(highway: string): number {
-  // Higher = more important/faster
   const classes: Record<string, number> = {
     motorway: 7,
     trunk: 6,
@@ -234,4 +258,21 @@ function classifyRoad(highway: string): number {
     track: 1,
   };
   return classes[highway] ?? -1;
+}
+
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    result.set(c, offset);
+    offset += c.length;
+  }
+  return result;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
