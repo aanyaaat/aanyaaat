@@ -13,6 +13,7 @@ import {
   Download,
 } from 'lucide-react';
 import { AppProvider, useApp } from '@/state/AppStore';
+import { NavProvider } from '@/navigation/state/NavStore';
 import { useThemeSync } from '@/ui/theme/theme';
 import { Sidebar } from '@/ui/chat/Sidebar';
 import { MessageList } from '@/ui/chat/MessageList';
@@ -23,6 +24,9 @@ import { AppearancePanel } from '@/ui/settings/AppearancePanel';
 import { PerformancePanel } from '@/ui/settings/PerformancePanel';
 import { AboutPanel } from '@/ui/settings/AboutPanel';
 import { Onboarding, hasOnboarded } from '@/ui/onboarding/Onboarding';
+import { GetMeHomeButton } from '@/navigation/ui/GetMeHomeButton';
+import { HomeSetup } from '@/navigation/ui/HomeSetup';
+import { NavigationScreen } from '@/navigation/ui/NavigationScreen';
 
 function Shell() {
   const app = useApp();
@@ -37,6 +41,8 @@ function Shell() {
   const [showAbout, setShowAbout] = useState(false);
   const [errorDismissed, setErrorDismissed] = useState(false);
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showNav, setShowNav] = useState(false);
+  const [showHomeSetup, setShowHomeSetup] = useState(false);
 
   useEffect(() => {
     void app.init();
@@ -120,6 +126,7 @@ function Shell() {
 
           <div className="flex items-center gap-1">
             <OfflineBadge />
+            <GetMeHomeButton onClick={() => setShowNav(true)} />
             <TopBtn label="Models" onClick={() => setShowModels(true)} active={showModels}>
               <Layers size={18} />
             </TopBtn>
@@ -205,6 +212,8 @@ function Shell() {
       {showAppearance && <AppearancePanel onClose={() => setShowAppearance(false)} />}
       {showPerf && <PerformancePanel onClose={() => setShowPerf(false)} />}
       {showAbout && <AboutPanel onClose={() => setShowAbout(false)} />}
+      {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => { setShowHomeSetup(false); setShowNav(true); }} />}
+      {showNav && <NavigationScreen onClose={() => setShowNav(false)} />}
     </div>
   );
 }
@@ -255,7 +264,9 @@ interface BeforeInstallPromptEvent extends Event {
 export default function App() {
   return (
     <AppProvider>
-      <Shell />
+      <NavProvider>
+        <Shell />
+      </NavProvider>
     </AppProvider>
   );
 }
