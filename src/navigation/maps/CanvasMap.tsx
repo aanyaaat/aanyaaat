@@ -113,6 +113,7 @@ export function CanvasMap({
           hospital: '#ff6b6b',
           police: '#4dabf7',
           station: '#ffd43b',
+          bus_stop: '#69db7c',
           landmark: '#a78bfa',
         };
         ctx.fillStyle = colors[poi.type] ?? '#fff';

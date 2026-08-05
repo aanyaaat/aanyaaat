@@ -13,7 +13,7 @@ import {
   Download,
 } from 'lucide-react';
 import { AppProvider, useApp } from '@/state/AppStore';
-import { NavProvider } from '@/navigation/state/NavStore';
+import { NavProvider, useNav } from '@/navigation/state/NavStore';
 import { useThemeSync } from '@/ui/theme/theme';
 import { Sidebar } from '@/ui/chat/Sidebar';
 import { MessageList } from '@/ui/chat/MessageList';
@@ -24,12 +24,12 @@ import { AppearancePanel } from '@/ui/settings/AppearancePanel';
 import { PerformancePanel } from '@/ui/settings/PerformancePanel';
 import { AboutPanel } from '@/ui/settings/AboutPanel';
 import { Onboarding, hasOnboarded } from '@/ui/onboarding/Onboarding';
-import { GetMeHomeButton } from '@/navigation/ui/GetMeHomeButton';
 import { HomeSetup } from '@/navigation/ui/HomeSetup';
 import { NavigationScreen } from '@/navigation/ui/NavigationScreen';
 
 function Shell() {
   const app = useApp();
+  const nav = useNav();
   useThemeSync(app.appearance);
 
   const [onboarded, setOnboarded] = useState(hasOnboarded());
@@ -47,6 +47,18 @@ function Shell() {
   useEffect(() => {
     void app.init();
   }, [app.init]);
+
+  // Deep-link: #get-me-home opens navigation directly
+  useEffect(() => {
+    const checkHash = () => {
+      if (window.location.hash === '#get-me-home') {
+        setShowNav(true);
+      }
+    };
+    checkHash();
+    window.addEventListener('hashchange', checkHash);
+    return () => window.removeEventListener('hashchange', checkHash);
+  }, []);
 
   // Capture PWA install prompt
   useEffect(() => {
@@ -80,7 +92,7 @@ function Shell() {
     <div className="flex h-screen w-screen overflow-hidden bg-surface text-ink">
       {/* Sidebar — desktop */}
       <div className="hidden md:flex">
-        <Sidebar />
+        <Sidebar onOpenNav={() => (nav.home ? setShowNav(true) : setShowHomeSetup(true))} />
       </div>
 
       {/* Sidebar — mobile drawer */}
@@ -88,7 +100,7 @@ function Shell() {
         <div className="fixed inset-0 z-40 md:hidden">
           <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
           <div className="absolute left-0 top-0 h-full animate-slide-in">
-            <Sidebar onClose={() => setSidebarOpen(false)} />
+            <Sidebar onClose={() => setSidebarOpen(false)} onOpenNav={() => { setSidebarOpen(false); nav.home ? setShowNav(true) : setShowHomeSetup(true); }} />
           </div>
         </div>
       )}
@@ -126,7 +138,6 @@ function Shell() {
 
           <div className="flex items-center gap-1">
             <OfflineBadge />
-            <GetMeHomeButton onClick={() => setShowNav(true)} />
             <TopBtn label="Models" onClick={() => setShowModels(true)} active={showModels}>
               <Layers size={18} />
             </TopBtn>
@@ -213,7 +224,17 @@ function Shell() {
       {showPerf && <PerformancePanel onClose={() => setShowPerf(false)} />}
       {showAbout && <AboutPanel onClose={() => setShowAbout(false)} />}
       {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => { setShowHomeSetup(false); setShowNav(true); }} />}
-      {showNav && <NavigationScreen onClose={() => setShowNav(false)} />}
+      {showNav && (
+        <NavigationScreen
+          onClose={() => {
+            setShowNav(false);
+            if (window.location.hash === '#get-me-home') {
+              history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
+          }}
+        />
+      )}
+
     </div>
   );
 }

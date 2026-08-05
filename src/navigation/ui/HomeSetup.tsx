@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
   MapPin,
@@ -8,10 +8,18 @@ import {
   Loader2,
   Check,
   Navigation,
+  Bus,
+  Navigation2,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
-import { getSingleFix } from '@/navigation/gps/gps';
+import { getSingleFix, haversineMeters, formatDistance } from '@/navigation/gps/gps';
 import type { HomeLocation } from '@/navigation/domain/types';
+import {
+  searchPlaces,
+  abortSearch,
+  debounce,
+  type SearchResult,
+} from '@/navigation/search/placeSearch';
 
 export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProceed: () => void }) {
   const nav = useNav();
@@ -19,11 +27,64 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
   const [lat, setLat] = useState<string>(nav.home ? String(nav.home.latitude) : '');
   const [lng, setLng] = useState<string>(nav.home ? String(nav.home.longitude) : '');
   const [locating, setLocating] = useState(false);
-  const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<NominatimResult[]>([]);
+  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [refCoords, setRefCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Try to get GPS for local-biased search (non-blocking, best-effort)
+  useEffect(() => {
+    getSingleFix(5000)
+      .then((fix) => setRefCoords({ lat: fix.latitude, lng: fix.longitude }))
+      .catch(() => {});
+  }, []);
+
+  // Debounced search function
+  const doSearch = useCallback(
+    async (q: string) => {
+      if (q.trim().length < 2) {
+        setSuggestions([]);
+        setSearching(false);
+        return;
+      }
+      setSearching(true);
+      try {
+        const results = await searchPlaces(q, refCoords?.lat, refCoords?.lng);
+        setSuggestions(results);
+        setShowSuggestions(true);
+      } catch (e) {
+        setError(`Search failed: ${(e as Error).message}`);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [refCoords],
+  );
+
+  // Create debounced version
+  const debouncedRef = useRef(debounce(doSearch, 350));
+  useEffect(() => {
+    debouncedRef.current = debounce(doSearch, 350);
+  }, [doSearch]);
+
+  // Trigger debounced search on input
+  useEffect(() => {
+    if (searchQuery.trim().length >= 2) {
+      debouncedRef.current.debounced(searchQuery);
+    } else {
+      setSuggestions([]);
+      setShowSuggestions(false);
+    }
+    return () => debouncedRef.current.cancel();
+  }, [searchQuery]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => abortSearch();
+  }, []);
 
   const useCurrentLocation = async () => {
     setLocating(true);
@@ -32,6 +93,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
       const fix = await getSingleFix();
       setLat(String(fix.latitude));
       setLng(String(fix.longitude));
+      setRefCoords({ lat: fix.latitude, lng: fix.longitude });
     } catch (e) {
       setError(`Could not get your location: ${(e as Error).message}`);
     } finally {
@@ -39,22 +101,14 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
     }
   };
 
-  const search = async () => {
-    if (!searchQuery.trim()) return;
-    setSearching(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5`,
-        { headers: { 'Accept-Language': 'en' } },
-      );
-      const data = (await res.json()) as NominatimResult[];
-      setSearchResults(data);
-    } catch (e) {
-      setError(`Search failed: ${(e as Error).message}`);
-    } finally {
-      setSearching(false);
-    }
+  const selectResult = (r: SearchResult) => {
+    setLat(r.lat);
+    setLng(r.lon);
+    const main = r.name || r.display_name.split(',')[0]?.trim() || r.display_name;
+    if (!label || label === 'Home') setLabel(main);
+    setShowSuggestions(false);
+    setSearchQuery('');
+    setSuggestions([]);
   };
 
   const save = () => {
@@ -130,45 +184,73 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
             {locating ? 'Locating you…' : 'Use my current location'}
           </button>
 
-          {/* Search */}
-          <div>
+          {/* Search with live suggestions */}
+          <div className="relative">
             <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Search (online)</label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && search()}
-                  placeholder="Search for a place…"
-                  className="w-full rounded-2xl border border-line bg-surface-raised py-3 pl-10 pr-4 text-sm text-ink placeholder:text-ink-faint focus:border-accent-300 focus:outline-none"
-                />
-              </div>
-              <button
-                onClick={search}
-                disabled={searching || !searchQuery.trim()}
-                className="rounded-2xl border border-line px-4 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink disabled:opacity-50"
-              >
-                {searching ? <Loader2 size={16} className="animate-spin" /> : 'Search'}
-              </button>
+            <div className="relative">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                placeholder="Search place, bus stop, or pincode…"
+                className="w-full rounded-2xl border border-line bg-surface-raised py-3 pl-10 pr-10 text-sm text-ink placeholder:text-ink-faint focus:border-accent-300 focus:outline-none"
+              />
+              {searching && (
+                <Loader2 size={16} className="absolute right-3.5 top-1/2 -translate-y-1/2 animate-spin text-accent-400" />
+              )}
             </div>
-            {searchResults.length > 0 && (
-              <div className="mt-2 space-y-1.5">
-                {searchResults.map((r) => (
-                  <button
-                    key={r.place_id}
-                    onClick={() => {
-                      setLat(r.lat);
-                      setLng(r.lon);
-                      if (!label || label === 'Home') setLabel(r.display_name.split(',')[0]);
-                    }}
-                    className="flex w-full items-start gap-2 rounded-2xl border border-line bg-surface-raised p-3 text-left text-sm transition-colors hover:bg-surface-subtle"
-                  >
-                    <MapPin size={14} className="mt-0.5 shrink-0 text-accent-400" />
-                    <span className="text-ink-muted">{r.display_name}</span>
-                  </button>
-                ))}
+
+            {/* Live suggestions dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute z-10 mt-1.5 max-h-64 w-full overflow-y-auto rounded-2xl border border-line bg-surface-raised shadow-float">
+                {suggestions.map((r) => {
+                  const parts = r.display_name.split(',');
+                  const main = r.name || parts[0]?.trim() || r.display_name;
+                  const context = parts.slice(1, 4).join(',').trim();
+                  const isBusStop = r.category === 'highway' && r.type === 'bus_stop';
+                  const dist = r._distanceMeters;
+                  const isExact = (r._score ?? 0) >= 0.95;
+                  return (
+                    <button
+                      key={r.place_id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectResult(r);
+                      }}
+                      className="flex w-full items-start gap-2.5 border-b border-line/50 px-3.5 py-3 text-left transition-colors last:border-b-0 hover:bg-surface-subtle"
+                    >
+                      <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${isBusStop ? 'bg-success/15 text-success' : 'bg-accent-100 text-accent-500'}`}>
+                        {isBusStop ? <Bus size={14} /> : <MapPin size={14} />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <p className="truncate text-sm font-medium text-ink">{main}</p>
+                          {isExact && (
+                            <span className="shrink-0 rounded-full bg-accent-100 px-1.5 py-0.5 text-[10px] font-semibold text-accent-600">
+                              Exact
+                            </span>
+                          )}
+                        </div>
+                        {context && <p className="truncate text-xs text-ink-faint">{context}</p>}
+                        {dist !== undefined && dist < 100000 && (
+                          <p className="mt-0.5 text-[10px] font-medium text-ink-faint">
+                            {formatDistance(dist)} away
+                          </p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Empty state hint */}
+            {showSuggestions && suggestions.length === 0 && !searching && searchQuery.trim().length >= 2 && (
+              <div className="absolute z-10 mt-1.5 w-full rounded-2xl border border-line bg-surface-raised px-4 py-3 text-center text-sm text-ink-faint shadow-float">
+                No results found. Try a different spelling.
               </div>
             )}
           </div>
@@ -219,11 +301,4 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
       </div>
     </div>
   );
-}
-
-interface NominatimResult {
-  place_id: number;
-  lat: string;
-  lon: string;
-  display_name: string;
 }

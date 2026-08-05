@@ -4,12 +4,18 @@ import type {
   TravelMode,
   TurnInstruction,
   InstructionType,
+  PartialRouteInfo,
 } from '@/navigation/domain/types';
 import { buildGraph, nearestNode, type RoadGraph } from '@/navigation/routing/graph';
 
 /**
  * Offline A* router over the locally stored OSM road graph.
  * No network calls. Uses haversine heuristic + road-class weighting.
+ *
+ * When the destination is outside the mapped area, computes a "partial route":
+ * routes to the graph node closest to the destination (i.e. the edge of
+ * coverage in that direction) and attaches continuation guidance so the
+ * user is never left stranded.
  */
 export function routeOffline(
   startLat: number,
@@ -72,6 +78,21 @@ export function routeOffline(
     totalDuration += (dist / 1000 / speeds[mode]) * 3600;
   }
 
+  // Check if destination is outside the mapped bbox → partial route
+  const destInCoverage = isPointInRegionBbox(destLat, destLng, region);
+  let partial: PartialRouteInfo | undefined;
+  if (!destInCoverage) {
+    const lastCoord = coordinates[coordinates.length - 1];
+    const remaining = haversine(lastCoord.lat, lastCoord.lng, destLat, destLng);
+    const bearing = bearingBetween(lastCoord.lat, lastCoord.lng, destLat, destLng);
+    partial = {
+      remainingStraightMeters: Math.round(remaining),
+      bearingDeg: Math.round(bearing),
+      cardinal: cardinalFromBearing(bearing),
+      reason: 'outside-mapped-area',
+    };
+  }
+
   // Build turn-by-turn instructions
   const instructions = buildInstructions(graph, path, coordinates, mode);
 
@@ -81,6 +102,7 @@ export function routeOffline(
     durationSeconds: Math.round(totalDuration),
     instructions,
     mode,
+    partial,
   };
 }
 
@@ -174,6 +196,43 @@ function haversine(
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+function bearingBetween(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lng2 - lng1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function cardinalFromBearing(bearing: number): string {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return dirs[Math.round(bearing / 45) % 8];
+}
+
+function isPointInRegionBbox(
+  lat: number,
+  lng: number,
+  region: OfflineRegion,
+): boolean {
+  const lats = Object.values(region.nodes).map((n) => n[0]);
+  const lngs = Object.values(region.nodes).map((n) => n[1]);
+  if (lats.length === 0) return false;
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng;
+}
+
 function buildInstructions(
   graph: RoadGraph,
   path: number[],
@@ -193,7 +252,6 @@ function buildInstructions(
   });
 
   let cumulative = 0;
-  let segStart = 0;
 
   // Group consecutive edges by road name → produce a turn when the name changes
   for (let i = 1; i < path.length - 1; i++) {
@@ -225,7 +283,6 @@ function buildInstructions(
         cumulativeMeters: Math.round(cumulative),
         point: { lat: a.lat, lng: a.lng },
       });
-      segStart = i;
     }
   }
 

@@ -16,6 +16,7 @@ import {
   Compass,
   RefreshCw,
   Loader2,
+  Info,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
 import { CanvasMap } from '@/navigation/maps/CanvasMap';
@@ -165,6 +166,17 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
               © OpenStreetMap contributors
             </div>
           </div>
+
+          {/* Partial route indicator */}
+          {hasRoute && nav.route?.partial && (
+            <div className="flex items-center gap-2.5 border-t border-warning/20 bg-warning/5 px-4 py-2.5 text-xs text-warning">
+              <Info size={14} className="shrink-0" />
+              <span>
+                Mapped route ends here. Continue {nav.route.partial.cardinal} for{' '}
+                {formatDistance(nav.route.partial.remainingStraightMeters)} to reach home.
+              </span>
+            </div>
+          )}
 
           {/* Instruction bar */}
           {hasRoute && nav.phase !== 'locating' && nav.phase !== 'calculating' && (

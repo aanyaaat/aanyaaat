@@ -9,6 +9,9 @@ import {
   Sun,
   Moon,
   Contrast,
+  Home,
+  Navigation,
+  MapPin,
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
 import { applyTheme } from '@/ui/theme/theme';
@@ -24,7 +27,7 @@ export function hasOnboarded(): boolean {
   }
 }
 
-type Step = 'splash' | 'welcome' | 'privacy' | 'offline' | 'theme' | 'done';
+type Step = 'splash' | 'welcome' | 'privacy' | 'offline' | 'getme-home' | 'theme' | 'done';
 
 export function Onboarding({ onComplete }: { onComplete: () => void }) {
   const app = useApp();
@@ -56,7 +59,10 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
     return <Privacy onNext={() => setStep('offline')} onSkip={skip} />;
   }
   if (step === 'offline') {
-    return <Offline onNext={() => setStep('theme')} onSkip={skip} />;
+    return <Offline onNext={() => setStep('getme-home')} onSkip={skip} />;
+  }
+  if (step === 'getme-home') {
+    return <GetMeHomeIntro onNext={() => setStep('theme')} onSkip={skip} />;
   }
   return <ThemePick onDone={finish} onSkip={skip} />;
 }
@@ -185,6 +191,45 @@ function ThemePick({ onDone, onSkip }: { onDone: () => void; onSkip: () => void 
         ))}
       </div>
       <ContinueBtn onClick={onDone} label="Enter Aanyaa" />
+    </OnboardingShell>
+  );
+}
+
+function GetMeHomeIntro({ onNext, onSkip }: { onNext: () => void; onSkip: () => void }) {
+  return (
+    <OnboardingShell onSkip={onSkip}>
+      <div className="mb-8 flex h-20 w-20 items-center justify-center rounded-full bg-accent-100 text-accent-500 shadow-float aanyaa-breathe">
+        <Home size={36} fill="currentColor" />
+      </div>
+      <h2 className="font-display text-3xl text-ink">Get me home, anytime</h2>
+      <p className="mt-4 max-w-md text-[15px] leading-relaxed text-ink-muted">
+        Lost or unfamiliar with an area? Aanyaa can guide you home —
+        with turn-by-turn directions that work even without internet.
+      </p>
+      <div className="mt-8 w-full max-w-sm space-y-3">
+        <div className="flex items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 shadow-card">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-500">
+            <MapPin size={18} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-ink">Set your home once</p>
+            <p className="mt-0.5 text-xs text-ink-faint">Search any address or bus stop — even with misspellings.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 shadow-card">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success/15 text-success">
+            <Navigation size={18} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-ink">Navigate offline</p>
+            <p className="mt-0.5 text-xs text-ink-faint">Download your area once. Directions work without signal.</p>
+          </div>
+        </div>
+      </div>
+      <p className="mt-6 max-w-sm text-xs text-ink-faint">
+        You'll find this in the sidebar menu whenever you need it.
+      </p>
+      <ContinueBtn onClick={onNext} label="Continue" />
     </OnboardingShell>
   );
 }

@@ -48,7 +48,11 @@ export async function fetchOsmBbox(
       node["amenity"="police"](${bbox});
       node["railway"="station"](${bbox});
       node["railway"="subway_entrance"](${bbox});
+      node["railway"="tram_stop"](${bbox});
       node["public_transport"="station"](${bbox});
+      node["public_transport"="platform"](${bbox});
+      node["highway"="bus_stop"](${bbox});
+      node["bus"="yes"](${bbox});
       way["amenity"="hospital"](${bbox});
       way["amenity"="police"](${bbox});
       way["railway"="station"](${bbox});
@@ -99,7 +103,11 @@ export async function fetchOsmBbox(
           el.tags.amenity === 'police' ||
           el.tags.railway === 'station' ||
           el.tags.railway === 'subway_entrance' ||
-          el.tags.public_transport === 'station'
+          el.tags.railway === 'tram_stop' ||
+          el.tags.public_transport === 'station' ||
+          el.tags.public_transport === 'platform' ||
+          el.tags.highway === 'bus_stop' ||
+          el.tags.bus === 'yes'
         ) {
           poiNodes.push(el);
         }
@@ -169,6 +177,13 @@ export async function fetchOsmBbox(
     else if (tags.amenity === 'police') type = 'police';
     else if (tags.railway === 'station' || tags.public_transport === 'station')
       type = 'station';
+    else if (
+      tags.highway === 'bus_stop' ||
+      tags.bus === 'yes' ||
+      tags.railway === 'tram_stop' ||
+      tags.public_transport === 'platform'
+    )
+      type = 'bus_stop';
     pois.push({
       lat: node.lat,
       lng: node.lon,

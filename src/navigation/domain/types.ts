@@ -54,6 +54,19 @@ export interface RouteResult {
   durationSeconds: number;
   instructions: TurnInstruction[];
   mode: TravelMode;
+  /** When the route only covers part of the journey (outside map coverage), this describes the remainder. */
+  partial?: PartialRouteInfo;
+}
+
+export interface PartialRouteInfo {
+  /** Straight-line distance from the end of the mapped route to the final destination, in meters. */
+  remainingStraightMeters: number;
+  /** Compass direction from the end of the mapped route to the final destination. */
+  bearingDeg: number;
+  /** Cardinal label (e.g. "NE") for the bearing. */
+  cardinal: string;
+  /** Why the route is partial — typically "outside-mapped-area". */
+  reason: string;
 }
 
 export type RegionPresetKm = 5 | 10 | 20 | 30;
@@ -88,7 +101,7 @@ export interface Poi {
   lat: number;
   lng: number;
   name: string;
-  type: 'hospital' | 'police' | 'station' | 'landmark';
+  type: 'hospital' | 'police' | 'station' | 'bus_stop' | 'landmark';
 }
 
 export type NetworkStatus = 'online' | 'offline';

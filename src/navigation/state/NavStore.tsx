@@ -233,11 +233,14 @@ export function NavProvider({ children }: { children: ReactNode }) {
             dest.longitude,
             r,
           );
-          if (!inCoverage || !destInCoverage) {
+          if (!inCoverage && !destInCoverage) {
+            // Both outside coverage — can't help with offline routing
             setPhase('off-coverage');
             setRoute(null);
             return;
           }
+          // Even if only one end is outside, routeOffline will produce
+          // a partial route to the edge of coverage + continuation guidance.
           result = routeOffline(
             fix.latitude,
             fix.longitude,

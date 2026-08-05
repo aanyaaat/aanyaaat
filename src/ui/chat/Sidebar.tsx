@@ -10,12 +10,16 @@ import {
   X,
   Check,
   Heart,
+  Home,
+  Navigation,
 } from 'lucide-react';
 import { useApp } from '@/state/AppStore';
+import { useNav } from '@/navigation/state/NavStore';
 import type { Chat, ExportFormat } from '@/domain/types';
 
-export function Sidebar({ onClose }: { onClose?: () => void }) {
+export function Sidebar({ onClose, onOpenNav }: { onClose?: () => void; onOpenNav?: () => void }) {
   const app = useApp();
+  const nav = useNav();
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Chat[] | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -179,6 +183,40 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             )}
           </div>
         ))}
+      </div>
+
+      {/* Get Me Home — primary navigation action */}
+      <div className="px-4 pb-3">
+        <button
+          onClick={() => {
+            onOpenNav?.();
+            onClose?.();
+          }}
+          className="group flex w-full items-center gap-3 rounded-2xl border border-accent-200 bg-gradient-to-br from-accent-50/60 to-surface-raised p-3.5 text-left transition-all hover:border-accent-300 hover:shadow-card active:scale-[0.98]"
+        >
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent-300 text-white shadow-soft transition-transform group-hover:scale-105">
+            <Home size={20} fill="currentColor" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <p className="text-sm font-semibold text-ink">Get Me Home</p>
+              <Navigation size={11} className="text-accent-400" />
+            </div>
+            <p className="truncate text-[11px] text-ink-faint">
+              {nav.home
+                ? nav.home.label
+                : 'Set your home location'}
+            </p>
+          </div>
+          {!nav.home && (
+            <span className="shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
+              Setup
+            </span>
+          )}
+          {nav.home && nav.region && (
+            <span className="shrink-0 h-2 w-2 rounded-full bg-success ring-2 ring-surface-raised" />
+          )}
+        </button>
       </div>
 
       {/* Footer — About */}
