@@ -38,8 +38,8 @@ import {
   Coffee,
   Utensils,
   Fuel,
-  Hotel,
-  Hospital,
+  Bed,
+  HeartPulse,
   Building,
   TreePine,
   ShoppingCart,
@@ -73,7 +73,6 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const [mapStyle, setMapStyle] = useState<MapStyle>('standard');
   const [showLayerPicker, setShowLayerPicker] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [zoomLevel, setZoomLevel] = useState(14);
 
   // Selected dropped pin / clicked POI card
   const [selectedPin, setSelectedPin] = useState<{
@@ -274,8 +273,8 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
                 { key: 'gas', label: 'Gas', query: 'gas station', icon: <Fuel size={13} /> },
                 { key: 'food', label: 'Restaurants', query: 'restaurant', icon: <Utensils size={13} /> },
                 { key: 'cafe', label: 'Coffee', query: 'cafe coffee', icon: <Coffee size={13} /> },
-                { key: 'hotel', label: 'Hotels', query: 'hotel', icon: <Hotel size={13} /> },
-                { key: 'hospital', label: 'Hospitals', query: 'hospital clinic', icon: <Hospital size={13} /> },
+                { key: 'hotel', label: 'Hotels', query: 'hotel motel', icon: <Bed size={13} /> },
+                { key: 'hospital', label: 'Hospitals', query: 'hospital clinic', icon: <HeartPulse size={13} /> },
                 { key: 'atm', label: 'ATMs', query: 'atm bank', icon: <Building size={13} /> },
                 { key: 'supermarket', label: 'Groceries', query: 'supermarket grocery', icon: <ShoppingCart size={13} /> },
                 { key: 'park', label: 'Parks', query: 'park garden', icon: <TreePine size={13} /> },
