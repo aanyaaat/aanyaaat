@@ -65,9 +65,9 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
   );
 
   // Create debounced version
-  const debouncedRef = useRef(debounce(doSearch, 350));
+  const debouncedRef = useRef(debounce(doSearch, 280));
   useEffect(() => {
-    debouncedRef.current = debounce(doSearch, 350);
+    debouncedRef.current = debounce(doSearch, 280);
   }, [doSearch]);
 
   // Trigger debounced search on input

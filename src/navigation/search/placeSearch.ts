@@ -7,7 +7,7 @@
  * 3. If query looks like a bus stop / transit query, also fetch bus stops specifically.
  * 4. Rank results: exact-name matches first, then nearby (within 50km), then by
  *    fuzzy similarity score (Levenshtein) to handle misspellings.
- * 5. Suggestions are debounced (350ms) and abortable for performance.
+ * 5. Suggestions are debounced (280ms) and abortable for performance.
  */
 
 export interface SearchResult {
@@ -98,6 +98,20 @@ export async function searchPlaces(
         ),
       );
     }
+
+    // Fallback: for multi-word queries, also search with just the first word.
+    // This catches cases where the last word is a partial/misspelled token that
+    // Nominatim's index can't match (e.g. "palace gutt" → search "palace" to
+    // surface "Palace Guttahalli Bus Stop", then prefix-aware scoring ranks it).
+    const words = q.split(/\s+/);
+    if (words.length >= 2 && words[0].length >= 3) {
+      fetches.push(
+        fetchNominatim(
+          `q=${encodeURIComponent(words[0])}&countrycodes=in&addressdetails=1&limit=8${viewbox}`,
+          signal,
+        ),
+      );
+    }
   }
 
   try {
@@ -123,11 +137,17 @@ export async function searchPlaces(
       }
     }
 
-    // Compute fuzzy similarity score
+    // Compute fuzzy similarity score against both the short name and the
+    // full display_name. This catches cases where the place name is generic
+    // (e.g. "bus stop") but the full address contains the matching text.
     const qLower = q.toLowerCase();
     for (const r of merged) {
-      const name = (r.name || r.display_name.split(',')[0] || '').toLowerCase();
-      r._score = fuzzyScore(qLower, name);
+      const shortName = (r.name || r.display_name.split(',')[0] || '').toLowerCase();
+      const fullName = r.display_name.toLowerCase();
+      r._score = Math.max(
+        fuzzyScore(qLower, shortName),
+        fuzzyScore(qLower, fullName) * 0.92,
+      );
     }
 
     // Rank:
@@ -183,7 +203,8 @@ async function fetchNominatim(params: string, signal: AbortSignal): Promise<Sear
 
 /**
  * Fuzzy similarity score [0..1].
- * Uses a normalized Levenshtein distance + substring bonus.
+ * Uses prefix-aware token matching + normalized Levenshtein distance.
+ * Prefix matches (e.g. "palace gutt" vs "palace guttahalli") score very high.
  */
 function fuzzyScore(query: string, target: string): number {
   if (!target) return 0;
@@ -192,28 +213,42 @@ function fuzzyScore(query: string, target: string): number {
   // Substring bonus: query appears inside target
   if (target.includes(query)) return 0.98;
 
-  // Token-based: any query token matches any target token
-  const qTokens = query.split(/\s+/);
-  const tTokens = target.split(/\s+/);
-  let tokenMatches = 0;
+  const qTokens = query.split(/\s+/).filter(Boolean);
+  const tTokens = target.split(/\s+/).filter(Boolean);
+
+  // Token-based scoring with prefix awareness:
+  // - Exact token match: 1.0
+  // - Query token is a prefix of a target token: 0.9 ("gutt" → "guttahalli")
+  // - Target token is a prefix of a query token: 0.7
+  // - Substring overlap: 0.6
+  let totalTokenScore = 0;
   for (const qt of qTokens) {
+    let best = 0;
     for (const tt of tTokens) {
-      if (tt.includes(qt) || qt.includes(tt)) {
-        tokenMatches++;
+      if (tt === qt) {
+        best = 1;
         break;
       }
+      if (tt.startsWith(qt) && qt.length >= 3) {
+        best = Math.max(best, 0.9);
+      } else if (qt.startsWith(tt) && tt.length >= 3) {
+        best = Math.max(best, 0.7);
+      } else if (tt.includes(qt) && qt.length >= 3) {
+        best = Math.max(best, 0.6);
+      }
     }
+    totalTokenScore += best;
   }
-  const tokenScore = qTokens.length > 0 ? tokenMatches / qTokens.length : 0;
+  const tokenScore = qTokens.length > 0 ? totalTokenScore / qTokens.length : 0;
 
-  // Levenshtein-based score
+  // Levenshtein-based score (character-level similarity)
   const dist = levenshtein(query, target);
   const maxLen = Math.max(query.length, target.length);
   const levScore = 1 - dist / maxLen;
 
   // Weighted: token score matters more for multi-word queries
   if (qTokens.length > 1) {
-    return Math.max(tokenScore * 0.7 + levScore * 0.3, levScore);
+    return Math.max(tokenScore * 0.8 + levScore * 0.2, levScore);
   }
   return Math.max(tokenScore, levScore);
 }

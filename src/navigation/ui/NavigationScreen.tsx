@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Loader2,
   Info,
+  Pencil,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
 import { CanvasMap } from '@/navigation/maps/CanvasMap';
@@ -64,6 +65,17 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          {nav.home && (
+            <button
+              onClick={() => setShowHomeSetup(true)}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-surface-raised px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:border-accent-300 hover:bg-surface-subtle hover:text-ink active:scale-95"
+              title="Change or reset your home location"
+            >
+              <Pencil size={12} />
+              <span className="hidden sm:inline max-w-[120px] truncate">{nav.home.label}</span>
+              <span className="sm:hidden">Change</span>
+            </button>
+          )}
           <StatusBadge
             icon={nav.network === 'online' ? <Wifi size={12} /> : <WifiOff size={12} />}
             label={nav.network === 'online' ? 'ONLINE' : 'OFFLINE'}

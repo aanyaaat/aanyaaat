@@ -207,24 +207,32 @@ function GetMeHomeIntro({ onNext, onSkip }: { onNext: () => void; onSkip: () => 
         with turn-by-turn directions that work even without internet.
       </p>
       <div className="mt-8 w-full max-w-sm space-y-3">
-        <div className="flex items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 shadow-card">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-500">
+        <button
+          onClick={() => { window.location.hash = 'set-home'; onSkip(); }}
+          className="group flex w-full items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 text-left shadow-card transition-all hover:border-accent-300 hover:shadow-card-hover active:scale-[0.98]"
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-500 transition-transform group-hover:scale-105">
             <MapPin size={18} />
           </div>
-          <div>
+          <div className="flex-1">
             <p className="text-sm font-medium text-ink">Set your home once</p>
             <p className="mt-0.5 text-xs text-ink-faint">Search any address or bus stop — even with misspellings.</p>
           </div>
-        </div>
-        <div className="flex items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 shadow-card">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success/15 text-success">
+          <ArrowRight size={15} className="shrink-0 text-ink-faint transition-transform group-hover:translate-x-0.5" />
+        </button>
+        <button
+          onClick={() => { window.location.hash = 'get-me-home'; onSkip(); }}
+          className="group flex w-full items-center gap-3 rounded-2xl border border-line bg-surface-raised p-4 text-left shadow-card transition-all hover:border-accent-300 hover:shadow-card-hover active:scale-[0.98]"
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success/15 text-success transition-transform group-hover:scale-105">
             <Navigation size={18} />
           </div>
-          <div>
+          <div className="flex-1">
             <p className="text-sm font-medium text-ink">Navigate offline</p>
             <p className="mt-0.5 text-xs text-ink-faint">Download your area once. Directions work without signal.</p>
           </div>
-        </div>
+          <ArrowRight size={15} className="shrink-0 text-ink-faint transition-transform group-hover:translate-x-0.5" />
+        </button>
       </div>
       <p className="mt-6 max-w-sm text-xs text-ink-faint">
         You'll find this in the sidebar menu whenever you need it.

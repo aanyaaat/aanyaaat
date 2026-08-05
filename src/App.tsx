@@ -41,23 +41,36 @@ function Shell() {
   const [showAbout, setShowAbout] = useState(false);
   const [errorDismissed, setErrorDismissed] = useState(false);
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
-  const [showNav, setShowNav] = useState(false);
-  const [showHomeSetup, setShowHomeSetup] = useState(false);
+  const [showNav, setShowNav] = useState(() => {
+    const h = typeof window !== 'undefined' ? window.location.hash : '';
+    return h === '#get-me-home' || h === '#set-home';
+  });
+  const [showHomeSetup, setShowHomeSetup] = useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#set-home',
+  );
 
   useEffect(() => {
     void app.init();
   }, [app.init]);
 
-  // Deep-link: #get-me-home opens navigation directly
+  // URL-driven routing for Get Me Home pages
   useEffect(() => {
-    const checkHash = () => {
-      if (window.location.hash === '#get-me-home') {
+    const syncHash = () => {
+      const h = window.location.hash;
+      if (h === '#get-me-home') {
         setShowNav(true);
+        setShowHomeSetup(false);
+      } else if (h === '#set-home') {
+        setShowNav(true);
+        setShowHomeSetup(true);
+      } else {
+        setShowNav(false);
+        setShowHomeSetup(false);
       }
     };
-    checkHash();
-    window.addEventListener('hashchange', checkHash);
-    return () => window.removeEventListener('hashchange', checkHash);
+    syncHash();
+    window.addEventListener('hashchange', syncHash);
+    return () => window.removeEventListener('hashchange', syncHash);
   }, []);
 
   // Capture PWA install prompt
@@ -92,7 +105,7 @@ function Shell() {
     <div className="flex h-screen w-screen overflow-hidden bg-surface text-ink">
       {/* Sidebar — desktop */}
       <div className="hidden md:flex">
-        <Sidebar onOpenNav={() => (nav.home ? setShowNav(true) : setShowHomeSetup(true))} />
+        <Sidebar onOpenNav={() => { window.location.hash = nav.home ? 'get-me-home' : 'set-home'; }} />
       </div>
 
       {/* Sidebar — mobile drawer */}
@@ -100,7 +113,7 @@ function Shell() {
         <div className="fixed inset-0 z-40 md:hidden">
           <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
           <div className="absolute left-0 top-0 h-full animate-slide-in">
-            <Sidebar onClose={() => setSidebarOpen(false)} onOpenNav={() => { setSidebarOpen(false); nav.home ? setShowNav(true) : setShowHomeSetup(true); }} />
+            <Sidebar onClose={() => setSidebarOpen(false)} onOpenNav={() => { setSidebarOpen(false); window.location.hash = nav.home ? 'get-me-home' : 'set-home'; }} />
           </div>
         </div>
       )}
@@ -223,14 +236,16 @@ function Shell() {
       {showAppearance && <AppearancePanel onClose={() => setShowAppearance(false)} />}
       {showPerf && <PerformancePanel onClose={() => setShowPerf(false)} />}
       {showAbout && <AboutPanel onClose={() => setShowAbout(false)} />}
-      {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => { setShowHomeSetup(false); setShowNav(true); }} />}
+      {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => { setShowHomeSetup(false); if (window.location.hash === '#set-home') { window.location.hash = 'get-me-home'; } }} />}
       {showNav && (
         <NavigationScreen
           onClose={() => {
-            setShowNav(false);
-            if (window.location.hash === '#get-me-home') {
+            const h = window.location.hash;
+            if (h === '#get-me-home' || h === '#set-home') {
               history.replaceState(null, '', window.location.pathname + window.location.search);
             }
+            setShowNav(false);
+            setShowHomeSetup(false);
           }}
         />
       )}
