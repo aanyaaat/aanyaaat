@@ -86,6 +86,7 @@ export function CanvasMap({
   poiMarkers = [],
   recenterSignal,
   followMode,
+  rotation = 0,
   mapStyle = 'standard',
   onTap,
   onLongPress,
@@ -116,6 +117,7 @@ export function CanvasMap({
     savedPlaces,
     poiMarkers,
     followMode,
+    rotation,
     mapStyle,
     onTap,
     onLongPress,
@@ -132,12 +134,13 @@ export function CanvasMap({
       savedPlaces,
       poiMarkers,
       followMode,
+      rotation,
       mapStyle,
       onTap,
       onLongPress,
       onSelectPin,
     };
-  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, followMode, mapStyle, onTap, onLongPress, onSelectPin]);
+  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, followMode, rotation, mapStyle, onTap, onLongPress, onSelectPin]);
 
   const requestRender = useCallback(() => {
     if (rafRef.current === null) {
@@ -411,24 +414,76 @@ export function CanvasMap({
       ctx.fillText('D', pt.x, pt.y);
     }
 
-    // 7. GPS Location Marker
+    // 7. GPS Location Marker with Directional Vision Cone & 3D Navigation Arrow
     if (props.gpsFix) {
       const pt = project(props.gpsFix.latitude, props.gpsFix.longitude, vp);
+      const heading = props.gpsFix.heading ?? (props.followMode ? props.rotation : null);
 
+      // Accuracy Pulsating Halo
       ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 22, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, 24, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
-      ctx.fill();
+      if (heading !== null && Number.isFinite(heading)) {
+        const rad = ((heading - 90) * Math.PI) / 180;
+        const spreadRad = (35 * Math.PI) / 180; // 30 deg cone width
 
-      ctx.fillStyle = '#2563eb';
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
-      ctx.fill();
+        // Directional Cone of Vision Beam
+        const gradient = ctx.createRadialGradient(pt.x, pt.y, 5, pt.x, pt.y, 45);
+        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.45)');
+        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(pt.x, pt.y);
+        ctx.arc(pt.x, pt.y, 45, rad - spreadRad, rad + spreadRad);
+        ctx.closePath();
+        ctx.fill();
+
+        // 3D Navigation Arrowhead Pointer
+        ctx.save();
+        ctx.translate(pt.x, pt.y);
+        ctx.rotate(rad + Math.PI / 2);
+
+        // Arrow drop shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+        ctx.shadowBlur = 6;
+        ctx.shadowOffsetY = 2;
+
+        // White border
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(0, -12);
+        ctx.lineTo(9, 10);
+        ctx.lineTo(0, 5);
+        ctx.lineTo(-9, 10);
+        ctx.closePath();
+        ctx.fill();
+
+        // Blue inner arrow
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.moveTo(0, -9);
+        ctx.lineTo(7, 8);
+        ctx.lineTo(0, 4);
+        ctx.lineTo(-7, 8);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+      } else {
+        // Standard dot marker when stationary / no heading
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // 8. Scale Bar

@@ -54,6 +54,23 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const [mapStyle, setMapStyle] = useState<MapStyle>('standard');
   const [showLayerPicker, setShowLayerPicker] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [deviceHeading, setDeviceHeading] = useState<number | null>(null);
+
+  useEffect(() => {
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      let h: number | null = null;
+      if ((e as any).webkitCompassHeading !== undefined) {
+        h = (e as any).webkitCompassHeading;
+      } else if (e.alpha !== null) {
+        h = 360 - e.alpha;
+      }
+      if (h !== null && Number.isFinite(h)) {
+        setDeviceHeading(h);
+      }
+    };
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    return () => window.removeEventListener('deviceorientation', handleOrientation, true);
+  }, []);
 
   // Selected dropped pin / clicked POI card
   const [selectedPin, setSelectedPin] = useState<{
@@ -249,7 +266,7 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
           poiMarkers={poiMarkers}
           recenterSignal={nav.recenterSignal}
           followMode={nav.followMode}
-          rotation={0}
+          rotation={nav.gpsFix?.heading ?? deviceHeading ?? 0}
           mapStyle={mapStyle}
           onTap={handleMapTap}
           onLongPress={(lat, lng) => handleMapTap(lat, lng)}
