@@ -26,6 +26,7 @@ import {
   Star,
   Plus,
   ArrowLeft,
+  Loader2,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
 import { CanvasMap, type MapStyle } from '@/navigation/maps/CanvasMap';
@@ -344,6 +345,47 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
+        {/* Personalized Aanyaa Loading Pill Overlay */}
+        {(nav.phase === 'calculating' || nav.phase === 'locating' || loadingPoi) && (
+          <div
+            data-testid="aanyaa-loading-indicator"
+            className="absolute top-16 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2.5 rounded-full border border-accent-300 bg-surface/95 px-4.5 py-2.5 text-xs font-semibold text-accent-700 shadow-float backdrop-blur-md animate-fade-in"
+          >
+            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-accent-500 text-white animate-spin">
+              <Loader2 size={13} />
+            </div>
+            <span>
+              {nav.phase === 'calculating'
+                ? 'Aanyaa is calculating your route…'
+                : nav.phase === 'locating'
+                ? 'Aanyaa is locating your position…'
+                : 'Aanyaa is searching nearby places…'}
+            </span>
+          </div>
+        )}
+
+        {/* Active Navigation Top Maneuver Card */}
+        {isNavigating && nav.route && nav.route.instructions[nav.nextInstructionIndex] && (
+          <div
+            data-testid="top-maneuver-card"
+            className="absolute top-16 left-3 right-3 z-30 flex items-center gap-3.5 rounded-2xl border border-accent-400 bg-accent-500 p-4 text-white shadow-float animate-slide-down"
+          >
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/20 shadow-inner">
+              <Navigation size={22} className="rotate-45" fill="currentColor" />
+            </div>
+            <div className="flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-white/80">
+                In {formatDistance(nav.route.instructions[nav.nextInstructionIndex].distanceMeters || 150)}
+              </p>
+              <p className="text-base font-bold leading-tight text-white">
+                {nav.route.instructions[nav.nextInstructionIndex].roadName
+                  ? `Follow ${nav.route.instructions[nav.nextInstructionIndex].roadName}`
+                  : 'Continue on current route'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Selected Pin / POI Card popup */}
         {selectedPin && (
           <div className="absolute bottom-4 left-4 right-4 z-20 rounded-3xl border border-line bg-surface/95 p-4 shadow-float backdrop-blur-md animate-slide-up" data-testid="selected-pin-card">
@@ -359,15 +401,15 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 onClick={() => {
-                  nav.startNavigation({
+                  nav.setDestination({
                     lat: selectedPin.lat,
                     lng: selectedPin.lng,
-                    label: selectedPin.label,
+                    label: selectedPin.label || `${selectedPin.lat.toFixed(4)}°, ${selectedPin.lng.toFixed(4)}°`,
                   });
                   setSelectedPin(null);
                 }}
                 data-testid="navigate-to-pin-btn"
-                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 px-4 py-2.5 text-xs font-semibold text-white transition-all hover:bg-accent-600 active:scale-95"
+                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 px-4 py-2.5 text-xs font-semibold text-white transition-all hover:bg-accent-600 active:scale-95 shadow-md"
               >
                 <Navigation size={14} /> Navigate Here
               </button>
@@ -582,6 +624,11 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
       )}
 
       {/* Modals */}
+      {showCompass && (
+        <div className="fixed inset-0 z-50 bg-surface">
+          <CompassFallback onClose={() => setShowCompass(false)} />
+        </div>
+      )}
       {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => setShowHomeSetup(false)} />}
       {showOfflineMaps && <OfflineMapsPanel onClose={() => setShowOfflineMaps(false)} />}
       {showRouteSearch && <RouteSearchPanel mode={showRouteSearch} onClose={() => setShowRouteSearch(null)} />}

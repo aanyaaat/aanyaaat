@@ -1,6 +1,6 @@
 /**
  * Ultra-reliable, high-performance map tile loader and cache.
- * Uses uniform OSM tile endpoints + IndexedDB persistence (`tileDb.ts`).
+ * Uses uniform OSM tile endpoints + IndexedDB persistence (`tileDb.ts`) + Chrome CacheStorage (`caches.open`).
  * Seamless multi-level parent tile scaling fallback so tiles NEVER look blank.
  */
 
@@ -8,6 +8,21 @@ import { saveTileToDb, getTileFromDb } from './tileDb';
 
 const MEMORY_CACHE = new Map<string, HTMLImageElement>();
 const MAX_MEMORY_TILES = 1500;
+const CHROME_TILE_CACHE = 'aanyaa_map_tiles_chrome_v1';
+
+async function cacheUrlInChromeCache(url: string) {
+  if ('caches' in window && url) {
+    try {
+      const cache = await caches.open(CHROME_TILE_CACHE);
+      const match = await cache.match(url);
+      if (!match) {
+        await cache.add(url);
+      }
+    } catch {
+      /* ignore CORS/cache policy error */
+    }
+  }
+}
 
 export function getTileUrl(z: number, x: number, y: number, dark = false): string {
   const maxTile = Math.pow(2, z);
@@ -97,6 +112,9 @@ export function loadTile(
 
   const url = getTileUrl(z, x, y, dark);
   if (!url) return null;
+
+  // Pre-cache URL into Chrome CacheStorage
+  void cacheUrlInChromeCache(url);
 
   const img = new Image();
 

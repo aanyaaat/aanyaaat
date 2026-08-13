@@ -17,8 +17,8 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
 ];
 
-const MAX_BBOX_DEGREE_SPAN = 0.6; // ~35km max span
-const MAX_ALLOWED_RESPONSE_BYTES = 40 * 1024 * 1024; // 40 MB max download safety limit
+const MAX_BBOX_DEGREE_SPAN = 0.85; // ~55km max span to support 30km radius
+const MAX_ALLOWED_RESPONSE_BYTES = 50 * 1024 * 1024; // 50 MB max download safety limit
 
 interface OverpassNode {
   type: 'node';
@@ -57,9 +57,9 @@ export async function fetchOsmBbox(
 
   const bbox = `${south},${west},${north},${east}`;
   const query = `
-    [out:json][timeout:90];
+    [out:json][timeout:120];
     (
-      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|footway|path|cycleway|pedestrian|track)$"](${bbox});
+      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)$"](${bbox});
       node["amenity"="hospital"](${bbox});
       node["amenity"="police"](${bbox});
       node["railway"="station"](${bbox});

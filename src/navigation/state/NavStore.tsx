@@ -347,17 +347,6 @@ export function NavProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Option 3: Fail-safe road-guided route (ensures route calculation ALWAYS succeeds)
-        if (!result) {
-          result = await routeOnline(
-            fix.latitude,
-            fix.longitude,
-            dest.lat,
-            dest.lng,
-            travelModeRef.current
-          );
-        }
-
         if (result) {
           setRoute(result);
           setRouteError(null);
@@ -367,16 +356,24 @@ export function NavProvider({ children }: { children: ReactNode }) {
           setRemainingDuration(result.durationSeconds);
           setNextInstructionIndex(0);
           setPhase(isReroute ? 'navigating' : 'idle');
+        } else {
+          setRoute(null);
+          setRouteError({
+            reason: 'no-road-path',
+            message: 'No road route found between start and destination.',
+            details: 'Ensure internet connection is active or download local area map in Offline Maps.',
+          });
+          setPhase('route-unavailable');
         }
       } catch (e) {
         if ((e as Error).name !== 'AbortError') {
-          // Guaranteed fallback
-          const fallback = await routeOnline(fix.latitude, fix.longitude, dest.lat, dest.lng, travelModeRef.current);
-          if (fallback) {
-            setRoute(fallback);
-            setRouteError(null);
-            setPhase('idle');
-          }
+          setRoute(null);
+          setRouteError({
+            reason: 'worker-error',
+            message: 'Route calculation error.',
+            details: String(e),
+          });
+          setPhase('route-unavailable');
         }
       }
     },
@@ -385,9 +382,15 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { calculateRouteRef.current = calculateRoute; }, [calculateRoute]);
 
-  const startNavigation = useCallback(async (dest?: { lat: number; lng: number; label: string }) => {
-    const rawTarget = dest ?? destRef.current ?? homeRef.current;
-    if (!rawTarget) {
+  const startNavigation = useCallback(async (targetParam?: { lat: number; lng: number; label?: string } | SavedPlace) => {
+    const dest = destRef.current;
+    const rawTarget = targetParam ?? dest ?? (homeRef.current ? { lat: homeRef.current.latitude, lng: homeRef.current.longitude, label: homeRef.current.label } : null);
+
+    const targetLat = rawTarget ? ('latitude' in rawTarget ? rawTarget.latitude : rawTarget.lat) : undefined;
+    const targetLng = rawTarget ? ('longitude' in rawTarget ? rawTarget.longitude : rawTarget.lng) : undefined;
+    const targetLabel = rawTarget ? rawTarget.label || 'Destination' : 'Destination';
+
+    if (targetLat === undefined || targetLng === undefined || !Number.isFinite(targetLat) || !Number.isFinite(targetLng)) {
       setRouteError({
         reason: 'invalid-coordinates',
         message: 'Please set a valid destination first.',
@@ -396,14 +399,18 @@ export function NavProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const target: { lat: number; lng: number; label: string } =
-      'latitude' in rawTarget
-        ? { lat: rawTarget.latitude, lng: rawTarget.longitude, label: rawTarget.label }
-        : { lat: rawTarget.lat, lng: rawTarget.lng, label: rawTarget.label };
+    const target = { lat: targetLat, lng: targetLng, label: targetLabel };
 
-    if (!dest && destRef.current === null) {
-      setDestinationState(target);
-      destRef.current = target;
+    setDestinationState(target);
+    destRef.current = target;
+
+    // If route already exists for this destination, enter navigating phase immediately
+    if (routeRef.current && phaseRef.current !== 'navigating') {
+      setPhase('navigating');
+      setFollowMode(true);
+      setRecenterSignal(Date.now());
+      setRouteError(null);
+      return;
     }
 
     setRouteError(null);
@@ -411,30 +418,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
     setOffRoute(false);
     offRouteCountRef.current = 0;
 
-    const isHome = homeRef.current &&
-      Math.abs(homeRef.current.latitude - target.lat) < 0.001 &&
-      Math.abs(homeRef.current.longitude - target.lng) < 0.001;
-
-    if (!isHome && target.label !== 'Dropped pin') {
-      const recentPlace: SavedPlace = {
-        id: uid(),
-        label: target.label,
-        latitude: target.lat,
-        longitude: target.lng,
-        type: 'recent',
-        createdAt: Date.now(),
-      };
-      void savePlace(recentPlace);
-      setSavedPlaces((prev) => {
-        const filtered = prev.filter((p) => p.type !== 'recent' ||
-          !(Math.abs(p.latitude - target.lat) < 0.001 && Math.abs(p.longitude - target.lng) < 0.001));
-        return [...filtered, recentPlace].filter((p) => p.type === 'recent').slice(-10).concat(
-          filtered.filter((p) => p.type !== 'recent')
-        );
-      });
-    }
-
-    const gpsStart = gpsFix;
+    const gpsStart = gpsFixRef.current;
     const homeStart = homeRef.current;
     const startLat = gpsStart?.latitude ?? homeStart?.latitude;
     const startLng = gpsStart?.longitude ?? homeStart?.longitude;
@@ -451,6 +435,9 @@ export function NavProvider({ children }: { children: ReactNode }) {
       };
       setPhase('calculating');
       await calculateRouteRef.current(startFix, target, false);
+      setPhase('navigating');
+      setFollowMode(true);
+      setRecenterSignal(Date.now());
     }
 
     watcherRef.current?.stop();
@@ -657,6 +644,19 @@ export function NavProvider({ children }: { children: ReactNode }) {
       }
     }
   }, []);
+
+  // Auto-download 30km radius offline region on page load whenever 0 regions are installed
+  const auto30kmTriggeredRef = useRef(false);
+
+  useEffect(() => {
+    if (!auto30kmTriggeredRef.current && networkRef.current === 'online' && regions.length === 0 && !installing) {
+      const cLat = gpsFix?.latitude ?? home?.latitude ?? 28.6139;
+      const cLng = gpsFix?.longitude ?? home?.longitude ?? 77.2090;
+
+      auto30kmTriggeredRef.current = true;
+      void installOfflineRegion(30, 'Local Area (30km)', { lat: cLat, lng: cLng });
+    }
+  }, [gpsFix, home, regions.length, installing, installOfflineRegion]);
 
   const value = useMemo<NavState>(
     () => ({

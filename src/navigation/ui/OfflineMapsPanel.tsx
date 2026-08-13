@@ -172,8 +172,11 @@ export function OfflineMapsPanel({ onClose }: { onClose: () => void }) {
 
               <div className="flex gap-2">
                 <button
-                  onClick={() => nav.installOfflineRegion(selectedRadius)}
-                  disabled={nav.installing || !nav.home || nav.network === 'offline'}
+                  onClick={() => {
+                    const center = nav.gpsFix ? { lat: nav.gpsFix.latitude, lng: nav.gpsFix.longitude } : nav.destination ? { lat: nav.destination.lat, lng: nav.destination.lng } : nav.home ? { lat: nav.home.latitude, lng: nav.home.longitude } : { lat: 28.6139, lng: 77.2090 };
+                    void nav.installOfflineRegion(selectedRadius, `Area · ${selectedRadius}km`, center);
+                  }}
+                  disabled={nav.installing || nav.network === 'offline'}
                   data-testid="start-download-btn"
                   className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 px-6 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-600 active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-subtle disabled:text-ink-faint"
                 >
@@ -188,13 +191,6 @@ export function OfflineMapsPanel({ onClose }: { onClose: () => void }) {
                   Cancel
                 </button>
               </div>
-
-              {!nav.home && (
-                <div className="flex items-center gap-2 rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-                  <AlertCircle size={16} className="shrink-0" />
-                  Set your home location first.
-                </div>
-              )}
             </div>
           ) : (
             <button
