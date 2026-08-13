@@ -6,18 +6,19 @@ import type {
 } from '@/navigation/domain/types';
 
 /**
- * Fetches OpenStreetMap data for a bounding box from the Overpass API.
- * Overpass is the legitimate bulk-download endpoint for OSM data (ODbL).
- * We request highways + key amenities (hospitals, police, stations) only,
- * keeping the dataset small and focused on emergency navigation.
+ * Fetches OpenStreetMap vector data from Overpass API.
+ * Uses sub-quadrant grid fetching for large bounding boxes (e.g., 30km radius)
+ * to avoid HTTP 504 Gateway Timeouts and maximize download speed.
  */
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.nchc.org.tw/api/interpreter',
 ];
 
-const MAX_BBOX_DEGREE_SPAN = 0.85; // ~55km max span to support 30km radius
+const MAX_BBOX_DEGREE_SPAN = 0.85; // ~55km max span
 const MAX_ALLOWED_RESPONSE_BYTES = 50 * 1024 * 1024; // 50 MB max download safety limit
 
 interface OverpassNode {
@@ -55,99 +56,111 @@ export async function fetchOsmBbox(
 ): Promise<OfflineRegion> {
   validateDownloadBounds(south, west, north, east);
 
+  // If bbox is large (> 0.28° span, e.g. 30km radius), split into 4 sub-quadrants to prevent 504 Gateway Timeout
+  const latSpan = north - south;
+  const lngSpan = east - west;
+
+  if (latSpan > 0.28 || lngSpan > 0.28) {
+    onProgress?.('Downloading map region in 4 fast sub-quadrants…');
+    const midLat = (south + north) / 2;
+    const midLng = (west + east) / 2;
+
+    const quads = [
+      { s: south, w: west, n: midLat, e: midLng }, // SW
+      { s: south, w: midLng, n: midLat, e: east }, // SE
+      { s: midLat, w: west, n: north, e: midLng }, // NW
+      { s: midLat, w: midLng, n: north, e: east }, // NE
+    ];
+
+    const elementsMap = new Map<number | string, OverpassNode | OverpassWay>();
+
+    for (let i = 0; i < quads.length; i++) {
+      if (signal?.aborted) throw new Error('Download aborted by user.');
+      const q = quads[i];
+      onProgress?.(`Fetching quadrant ${i + 1}/4…`);
+      const quadElements = await fetchSingleBboxElements(q.s, q.w, q.n, q.e, signal);
+      for (const el of quadElements) {
+        const key = `${el.type}_${el.id}`;
+        if (!elementsMap.has(key)) {
+          elementsMap.set(key, el);
+        }
+      }
+    }
+
+    const combinedElements = Array.from(elementsMap.values());
+    return parseElementsToRegion(south, west, north, east, combinedElements, onProgress);
+  }
+
+  const singleElements = await fetchSingleBboxElements(south, west, north, east, signal, onProgress);
+  return parseElementsToRegion(south, west, north, east, singleElements, onProgress);
+}
+
+async function fetchSingleBboxElements(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  signal?: AbortSignal,
+  onProgress?: (msg: string, bytesReceived?: number, totalBytes?: number | null) => void
+): Promise<(OverpassNode | OverpassWay)[]> {
   const bbox = `${south},${west},${north},${east}`;
   const query = `
-    [out:json][timeout:120];
+    [out:json][timeout:60];
     (
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)$"](${bbox});
       node["amenity"="hospital"](${bbox});
       node["amenity"="police"](${bbox});
       node["railway"="station"](${bbox});
-      node["railway"="subway_entrance"](${bbox});
-      node["railway"="tram_stop"](${bbox});
-      node["public_transport"="station"](${bbox});
-      node["public_transport"="platform"](${bbox});
       node["highway"="bus_stop"](${bbox});
-      node["bus"="yes"](${bbox});
-      way["amenity"="hospital"](${bbox});
-      way["amenity"="police"](${bbox});
-      way["railway"="station"](${bbox});
     );
     out body geom;
   `;
 
-  let data: { elements: (OverpassNode | OverpassWay)[] } | null = null;
   let lastErr: Error | null = null;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
-    if (signal?.aborted) {
-      throw new Error('Download aborted by user.');
-    }
+    if (signal?.aborted) throw new Error('Download aborted by user.');
 
     try {
-      onProgress?.(`Fetching from ${new URL(endpoint).hostname}…`);
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
-        signal,
+        signal: signal || AbortSignal.timeout(30000),
       });
 
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
 
-      const contentLength = res.headers.get('Content-Length');
-      const total = contentLength ? parseInt(contentLength, 10) : null;
-
-      if (res.body && typeof ReadableStream !== 'undefined') {
-        const reader = res.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
-        while (true) {
-          if (signal?.aborted) {
-            reader.cancel();
-            throw new Error('Download aborted by user.');
-          }
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            received += value.length;
-            if (received > MAX_ALLOWED_RESPONSE_BYTES) {
-              reader.cancel();
-              throw new Error(`Download size exceeded limit (${formatBytes(MAX_ALLOWED_RESPONSE_BYTES)}).`);
-            }
-            onProgress?.(`Downloading… ${formatBytes(received)}`, received, total);
-          }
-        }
-        const text = new TextDecoder().decode(concatChunks(chunks));
-        data = JSON.parse(text);
-      } else {
-        onProgress?.('Downloading…');
-        data = (await res.json()) as { elements: (OverpassNode | OverpassWay)[] };
+      const data = (await res.json()) as { elements: (OverpassNode | OverpassWay)[] };
+      if (data && Array.isArray(data.elements)) {
+        return data.elements;
       }
-
-      lastErr = null;
-      break;
     } catch (e) {
       if ((e as Error).name === 'AbortError' || signal?.aborted) {
         throw new Error('Download aborted by user.');
       }
       lastErr = e as Error;
-      onProgress?.(`Retrying with alternate server…`);
     }
   }
 
-  if (!data || lastErr) {
-    throw new Error(`Overpass download failed: ${lastErr?.message ?? 'unknown error'}`);
-  }
+  throw new Error(`Overpass download failed: ${lastErr?.message ?? '504 Gateway Timeout'}`);
+}
 
-  onProgress?.(`Received ${data.elements.length} elements. Parsing…`);
+function parseElementsToRegion(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  elements: (OverpassNode | OverpassWay)[],
+  onProgress?: (msg: string) => void
+): OfflineRegion {
+  onProgress?.(`Parsing ${elements.length} elements into offline road graph…`);
 
   const nodes = new Map<number, [number, number]>();
   const ways: OverpassWay[] = [];
   const poiNodes: OverpassNode[] = [];
 
-  for (const el of data.elements) {
+  for (const el of elements) {
     if (el.type === 'node') {
       nodes.set(el.id, [el.lat, el.lon]);
       if (el.tags && isPoiNode(el.tags)) {
@@ -164,8 +177,6 @@ export async function fetchOsmBbox(
       }
     }
   }
-
-  onProgress?.('Extracting roads…');
 
   const graphNodes: Record<number, [number, number]> = {};
   const graphEdges: [number, number, number, string?][] = [];
@@ -217,8 +228,6 @@ export async function fetchOsmBbox(
       }
     }
   }
-
-  onProgress?.('Extracting points of interest…');
 
   const pois: Poi[] = [];
   for (const node of poiNodes) {
@@ -276,12 +285,7 @@ function isPoiNode(tags: Record<string, string>): boolean {
     tags.amenity === 'hospital' ||
     tags.amenity === 'police' ||
     tags.railway === 'station' ||
-    tags.railway === 'subway_entrance' ||
-    tags.railway === 'tram_stop' ||
-    tags.public_transport === 'station' ||
-    tags.public_transport === 'platform' ||
-    tags.highway === 'bus_stop' ||
-    tags.bus === 'yes'
+    tags.highway === 'bus_stop'
   );
 }
 
@@ -296,24 +300,8 @@ function classifyRoad(highway: string): number {
     residential: 2,
     living_street: 1,
     service: 1,
-    pedestrian: 1,
-    footway: 1,
-    path: 1,
-    cycleway: 2,
-    track: 1,
   };
   return classes[highway] ?? -1;
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, c) => sum + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    result.set(c, offset);
-    offset += c.length;
-  }
-  return result;
 }
 
 function formatBytes(bytes: number): string {
