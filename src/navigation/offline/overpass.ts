@@ -2,6 +2,7 @@ import type {
   GeoJsonRoad,
   OfflineRegion,
   Poi,
+  Bbox,
 } from '@/navigation/domain/types';
 
 /**
@@ -15,6 +16,9 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
+
+const MAX_BBOX_DEGREE_SPAN = 0.6; // ~35km max span
+const MAX_ALLOWED_RESPONSE_BYTES = 40 * 1024 * 1024; // 40 MB max download safety limit
 
 interface OverpassNode {
   type: 'node';
@@ -32,13 +36,25 @@ interface OverpassWay {
   geometry?: { lat: number; lon: number }[];
 }
 
+export function validateDownloadBounds(south: number, west: number, north: number, east: number): void {
+  if (north <= south || east <= west) {
+    throw new Error('Invalid download coordinates bounds.');
+  }
+  if (north - south > MAX_BBOX_DEGREE_SPAN || east - west > MAX_BBOX_DEGREE_SPAN) {
+    throw new Error(`Requested region exceeds max permitted area span (${MAX_BBOX_DEGREE_SPAN}°).`);
+  }
+}
+
 export async function fetchOsmBbox(
   south: number,
   west: number,
   north: number,
   east: number,
-  onProgress: (msg: string, bytesReceived?: number, totalBytes?: number | null) => void,
+  onProgress?: (msg: string, bytesReceived?: number, totalBytes?: number | null) => void,
+  signal?: AbortSignal
 ): Promise<OfflineRegion> {
+  validateDownloadBounds(south, west, north, east);
+
   const bbox = `${south},${west},${north},${east}`;
   const query = `
     [out:json][timeout:90];
@@ -64,55 +80,68 @@ export async function fetchOsmBbox(
   let lastErr: Error | null = null;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    if (signal?.aborted) {
+      throw new Error('Download aborted by user.');
+    }
+
     try {
-      onProgress(`Fetching from ${new URL(endpoint).hostname}…`);
+      onProgress?.(`Fetching from ${new URL(endpoint).hostname}…`);
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
+        signal,
       });
+
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
 
-      // Stream progress via Content-Length if available
       const contentLength = res.headers.get('Content-Length');
       const total = contentLength ? parseInt(contentLength, 10) : null;
 
       if (res.body && typeof ReadableStream !== 'undefined') {
-        // Read the stream to track progress
         const reader = res.body.getReader();
         const chunks: Uint8Array[] = [];
         let received = 0;
         while (true) {
+          if (signal?.aborted) {
+            reader.cancel();
+            throw new Error('Download aborted by user.');
+          }
           const { done, value } = await reader.read();
           if (done) break;
           if (value) {
             chunks.push(value);
             received += value.length;
-            onProgress(`Downloading… ${formatBytes(received)}`, received, total);
+            if (received > MAX_ALLOWED_RESPONSE_BYTES) {
+              reader.cancel();
+              throw new Error(`Download size exceeded limit (${formatBytes(MAX_ALLOWED_RESPONSE_BYTES)}).`);
+            }
+            onProgress?.(`Downloading… ${formatBytes(received)}`, received, total);
           }
         }
         const text = new TextDecoder().decode(concatChunks(chunks));
         data = JSON.parse(text);
       } else {
-        onProgress('Downloading…');
+        onProgress?.('Downloading…');
         data = (await res.json()) as { elements: (OverpassNode | OverpassWay)[] };
       }
 
       lastErr = null;
       break;
     } catch (e) {
+      if ((e as Error).name === 'AbortError' || signal?.aborted) {
+        throw new Error('Download aborted by user.');
+      }
       lastErr = e as Error;
-      onProgress(`Retrying with alternate server…`);
+      onProgress?.(`Retrying with alternate server…`);
     }
   }
 
   if (!data || lastErr) {
-    throw new Error(
-      `Overpass download failed: ${lastErr?.message ?? 'unknown error'}`,
-    );
+    throw new Error(`Overpass download failed: ${lastErr?.message ?? 'unknown error'}`);
   }
 
-  onProgress(`Received ${data.elements.length} elements. Parsing…`);
+  onProgress?.(`Received ${data.elements.length} elements. Parsing…`);
 
   const nodes = new Map<number, [number, number]>();
   const ways: OverpassWay[] = [];
@@ -121,16 +150,14 @@ export async function fetchOsmBbox(
   for (const el of data.elements) {
     if (el.type === 'node') {
       nodes.set(el.id, [el.lat, el.lon]);
-      if (el.tags) {
-        if (isPoiNode(el.tags)) {
-          poiNodes.push(el);
-        }
+      if (el.tags && isPoiNode(el.tags)) {
+        poiNodes.push(el);
       }
     } else if (el.type === 'way') {
       ways.push(el);
       if (el.geometry) {
         for (let i = 0; i < el.nodes.length; i++) {
-          if (!nodes.has(el.nodes[i])) {
+          if (!nodes.has(el.nodes[i]) && el.geometry[i]) {
             nodes.set(el.nodes[i], [el.geometry[i].lat, el.geometry[i].lon]);
           }
         }
@@ -138,7 +165,7 @@ export async function fetchOsmBbox(
     }
   }
 
-  onProgress('Extracting roads…');
+  onProgress?.('Extracting roads…');
 
   const graphNodes: Record<number, [number, number]> = {};
   const graphEdges: [number, number, number, string?][] = [];
@@ -154,30 +181,44 @@ export async function fetchOsmBbox(
     const name = tags.name ?? tags.ref;
     const coords: [number, number][] = [];
 
+    let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+
     for (const nodeId of way.nodes) {
       const n = nodes.get(nodeId);
       if (!n) continue;
       graphNodes[nodeId] = n;
-      coords.push([n[1], n[0]]);
+      coords.push([n[1], n[0]]); // [lng, lat]
+
+      if (n[0] < minLat) minLat = n[0];
+      if (n[0] > maxLat) maxLat = n[0];
+      if (n[1] < minLng) minLng = n[1];
+      if (n[1] > maxLng) maxLng = n[1];
     }
 
     if (coords.length < 2) continue;
 
-    roads.push({ coords, roadClass, name });
+    const roadBbox: Bbox = { south: minLat, west: minLng, north: maxLat, east: maxLng };
+    roads.push({ coords, roadClass, name, bbox: roadBbox });
 
-    const oneway = tags.oneway === 'yes';
+    const onewayVal = (tags.oneway || '').toLowerCase();
+    const isOnewayForward = onewayVal === 'yes' || onewayVal === '1' || onewayVal === 'true';
+    const isOnewayReverse = onewayVal === '-1';
+
     for (let i = 0; i < way.nodes.length - 1; i++) {
       const a = way.nodes[i];
       const b = way.nodes[i + 1];
       if (!nodes.has(a) || !nodes.has(b)) continue;
-      graphEdges.push([a, b, roadClass, name]);
-      if (!oneway) {
+
+      if (!isOnewayReverse) {
+        graphEdges.push([a, b, roadClass, name]);
+      }
+      if (!isOnewayForward) {
         graphEdges.push([b, a, roadClass, name]);
       }
     }
   }
 
-  onProgress('Extracting points of interest…');
+  onProgress?.('Extracting points of interest…');
 
   const pois: Poi[] = [];
   for (const node of poiNodes) {
@@ -194,6 +235,7 @@ export async function fetchOsmBbox(
       tags.public_transport === 'platform'
     )
       type = 'bus_stop';
+
     pois.push({
       lat: node.lat,
       lng: node.lon,
@@ -211,8 +253,8 @@ export async function fetchOsmBbox(
   return {
     id: '',
     label: '',
-    centerLat: 0,
-    centerLng: 0,
+    centerLat: (south + north) / 2,
+    centerLng: (west + east) / 2,
     radiusKm: 0,
     createdAt: 0,
     updatedAt: 0,
@@ -223,6 +265,9 @@ export async function fetchOsmBbox(
     pois,
     sizeBytes,
     version: 1,
+    roadCount: roads.length,
+    poiCount: pois.length,
+    status: 'ready',
   };
 }
 

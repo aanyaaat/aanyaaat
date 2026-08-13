@@ -1,4 +1,4 @@
-import type { OfflineRegion } from '@/navigation/domain/types';
+import type { OfflineRegionData, OfflineRegion } from '@/navigation/domain/types';
 
 export interface GraphNode {
   id: number;
@@ -11,15 +11,20 @@ export interface GraphEdge {
   roadClass: number;
   name?: string;
   weight: number;
-  /** True for oneway streets — can only traverse from→to. */
   oneway?: boolean;
+}
+
+export interface SpatialGridIndex {
+  cellSizeDeg: number;
+  cells: Map<string, number[]>; // key "gridLat,gridLng" -> array of nodeIds
 }
 
 export interface RoadGraph {
   nodes: Map<number, GraphNode>;
   adjacency: Map<number, GraphEdge[]>;
-  /** Bounding box for quick coverage checks. */
+  spatialIndex: SpatialGridIndex;
   bbox: { south: number; west: number; north: number; east: number };
+  versionKey: string;
 }
 
 /** Speed factors by road class (higher = faster). */
@@ -33,33 +38,58 @@ const SPEED_FACTORS: Record<number, number> = {
   1: 0.2,   // service/footway
 };
 
+const GRID_CELL_DEG = 0.01; // ~1.1km grid cells
+
 /**
- * Build an adjacency-list road graph from a stored offline region.
- * Multiple regions can be merged into a single graph.
+ * Build an adjacency-list road graph from offline region payloads.
  */
-export function buildGraph(regions: OfflineRegion | OfflineRegion[]): RoadGraph {
+export function buildGraph(regions: OfflineRegionData | OfflineRegionData[] | OfflineRegion | OfflineRegion[]): RoadGraph {
   const list = Array.isArray(regions) ? regions : [regions];
   const nodes = new Map<number, GraphNode>();
   const adjacency = new Map<number, GraphEdge[]>();
+  const gridCells = new Map<string, number[]>();
 
   let south = Infinity, west = Infinity, north = -Infinity, east = -Infinity;
+  const versionParts: string[] = [];
 
   for (const region of list) {
-    for (const [id, [lat, lng]] of Object.entries(region.nodes)) {
-      const numId = Number(id);
-      if (!nodes.has(numId)) {
+    if (!region) continue;
+    const regionId = 'regionId' in region ? region.regionId : region.id;
+    versionParts.push(`${regionId}_${region.version || 1}`);
+
+    const nodeEntries = 'nodes' in region ? Object.entries(region.nodes || {}) : [];
+    for (const [idStr, coords] of nodeEntries) {
+      const numId = Number(idStr);
+      if (!nodes.has(numId) && Array.isArray(coords) && coords.length >= 2) {
+        const [lat, lng] = coords;
         nodes.set(numId, { id: numId, lat, lng });
         adjacency.set(numId, []);
+
         if (lat < south) south = lat;
         if (lat > north) north = lat;
         if (lng < west) west = lng;
         if (lng > east) east = lng;
+
+        // Add to spatial grid cell
+        const cellX = Math.floor(lat / GRID_CELL_DEG);
+        const cellY = Math.floor(lng / GRID_CELL_DEG);
+        const cellKey = `${cellX},${cellY}`;
+        let cell = gridCells.get(cellKey);
+        if (!cell) {
+          cell = [];
+          gridCells.set(cellKey, cell);
+        }
+        cell.push(numId);
       }
     }
   }
 
   for (const region of list) {
-    for (const [from, to, roadClass, name] of region.edges) {
+    if (!region) continue;
+    const edges = 'edges' in region ? region.edges || [] : [];
+    for (const edge of edges) {
+      if (!Array.isArray(edge) || edge.length < 3) continue;
+      const [from, to, roadClass, name] = edge;
       const fromNode = nodes.get(from);
       const toNode = nodes.get(to);
       if (!fromNode || !toNode) continue;
@@ -68,37 +98,69 @@ export function buildGraph(regions: OfflineRegion | OfflineRegion[]): RoadGraph 
       const speedFactor = SPEED_FACTORS[roadClass] ?? 0.3;
       const weight = dist / Math.max(0.15, speedFactor);
 
-      adjacency.get(from)!.push({ to, roadClass, name, weight });
+      const adj = adjacency.get(from);
+      if (adj) {
+        adj.push({ to, roadClass, name, weight });
+      }
     }
   }
 
   return {
     nodes,
     adjacency,
+    spatialIndex: {
+      cellSizeDeg: GRID_CELL_DEG,
+      cells: gridCells,
+    },
     bbox: { south, west, north, east },
+    versionKey: versionParts.sort().join('|'),
   };
 }
 
 /**
- * Find the nearest graph node to a given coordinate.
- * Limits search to within ~2km to avoid matching nodes from distant regions.
+ * Find the nearest graph node to a given coordinate using spatial grid lookup.
  */
 export function nearestNode(
   graph: RoadGraph,
   lat: number,
   lng: number,
+  maxDistMeters = 2500
 ): GraphNode | null {
+  const cellX = Math.floor(lat / GRID_CELL_DEG);
+  const cellY = Math.floor(lng / GRID_CELL_DEG);
+
   let nearest: GraphNode | null = null;
   let minDistSq = Infinity;
-  // ~0.02 degrees ≈ ~2.2km — max snapping distance
-  const maxDistSq = 0.02 * 0.02;
-  for (const node of graph.nodes.values()) {
+  // ~0.025 degrees ≈ 2.7km max search radius in degrees
+  const maxDegSq = (maxDistMeters / 111000) ** 2;
+
+  // Search candidate grid cells (3x3 grid around cell)
+  const candidateNodeIds: number[] = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = `${cellX + dx},${cellY + dy}`;
+      const ids = graph.spatialIndex.cells.get(key);
+      if (ids) {
+        for (let i = 0; i < ids.length; i++) {
+          candidateNodeIds.push(ids[i]);
+        }
+      }
+    }
+  }
+
+  // If spatial grid had nodes, search candidates; otherwise fallback to linear scan
+  const searchPool = candidateNodeIds.length > 0
+    ? candidateNodeIds.map((id) => graph.nodes.get(id)!).filter(Boolean)
+    : graph.nodes.values();
+
+  for (const node of searchPool) {
     const d = (node.lat - lat) ** 2 + (node.lng - lng) ** 2;
-    if (d < minDistSq && d <= maxDistSq) {
+    if (d < minDistSq && d <= maxDegSq) {
       minDistSq = d;
       nearest = node;
     }
   }
+
   return nearest;
 }
 
@@ -106,7 +168,7 @@ export function nearestNode(
 export function isPointInGraph(
   lat: number,
   lng: number,
-  graph: RoadGraph,
+  graph: RoadGraph
 ): boolean {
   const b = graph.bbox;
   if (b.south === Infinity) return false;
@@ -175,7 +237,7 @@ function haversine(
   lat1: number,
   lng1: number,
   lat2: number,
-  lng2: number,
+  lng2: number
 ): number {
   const R = 6371000;
   const toRad = (d: number) => (d * Math.PI) / 180;

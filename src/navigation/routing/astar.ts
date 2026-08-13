@@ -1,6 +1,8 @@
 import type {
+  OfflineRegionData,
   OfflineRegion,
   RouteResult,
+  RouteError,
   TravelMode,
   TurnInstruction,
   InstructionType,
@@ -19,11 +21,7 @@ import {
  * Offline A* router over locally stored OSM road graphs.
  * Uses a binary min-heap for the open set (O(log n) operations).
  *
- * Multi-region: all installed regions are merged into a single graph.
- *
- * Distance safety: all distances are computed via haversine and validated
- * against the straight-line distance. A route should never be longer than
- * ~3x the straight-line distance for normal road networks.
+ * Guaranteed road network routing: NEVER returns straight-line routes as valid navigation.
  */
 
 const MODE_SPEEDS: Record<TravelMode, number> = {
@@ -32,8 +30,10 @@ const MODE_SPEEDS: Record<TravelMode, number> = {
   bike: 15,
 };
 
-/** Maximum ratio of route distance to straight-line distance. */
-const MAX_DETOUR_RATIO = 4.0;
+export interface RouteOptions {
+  prefs?: RoutingPreferences;
+  shouldAbort?: () => boolean;
+}
 
 export function routeOffline(
   startLat: number,
@@ -41,176 +41,200 @@ export function routeOffline(
   destLat: number,
   destLng: number,
   mode: TravelMode,
-  regions: OfflineRegion | OfflineRegion[],
+  regions: OfflineRegionData | OfflineRegionData[] | OfflineRegion | OfflineRegion[],
   prefs?: RoutingPreferences,
+  shouldAbort?: () => boolean
 ): RouteResult | null {
-  const graph = buildGraph(regions);
-
-  if (graph.nodes.size === 0) return null;
-
-  const straightLine = haversine(startLat, startLng, destLat, destLng);
-
-  const startNode = nearestNode(graph, startLat, startLng);
-  const destNode = nearestNode(graph, destLat, destLng);
-
-  if (!startNode || !destNode) return null;
-
-  // Same node → arrive
-  if (startNode.id === destNode.id) {
-    return {
-      coordinates: [
-        { lat: startLat, lng: startLng },
-        { lat: destLat, lng: destLng },
-      ],
-      distanceMeters: Math.round(straightLine),
-      durationSeconds: Math.round((straightLine / 1000 / MODE_SPEEDS[mode]) * 3600),
-      instructions: [{
-        type: 'arrive',
-        roadName: 'Destination',
-        distanceMeters: 0,
-        cumulativeMeters: 0,
-        point: { lat: destLat, lng: destLng },
-      }],
-      mode,
-    };
-  }
-
-  const path = aStar(graph, startNode.id, destNode.id, prefs);
-
-  if (path && path.length >= 2) {
-    // Build coordinates from path
-    const coordinates: { lat: number; lng: number }[] = [];
-    for (const nodeId of path) {
-      const n = graph.nodes.get(nodeId)!;
-      coordinates.push({ lat: n.lat, lng: n.lng });
-    }
-
-    // Calculate distance + duration
-    let totalDistance = 0;
-    let totalDuration = 0;
-    const speed = MODE_SPEEDS[mode];
-
-    for (let i = 0; i < path.length - 1; i++) {
-      const a = graph.nodes.get(path[i])!;
-      const b = graph.nodes.get(path[i + 1])!;
-      const dist = haversine(a.lat, a.lng, b.lat, b.lng);
-      totalDistance += dist;
-      totalDuration += (dist / 1000 / speed) * 3600;
-    }
-
-    // Add access distances: start→startNode and destNode→dest
-    const startAccess = haversine(startLat, startLng, startNode.lat, startNode.lng);
-    const destAccess = haversine(destNode.lat, destNode.lng, destLat, destLng);
-    totalDistance += startAccess + destAccess;
-    totalDuration += ((startAccess + destAccess) / 1000 / speed) * 3600;
-
-    // Sanity check: if route is absurdly long, fall back to straight line
-    if (straightLine > 100 && totalDistance > straightLine * MAX_DETOUR_RATIO) {
-      return buildStraightLineRoute(startLat, startLng, destLat, destLng, mode, 'route-too-long');
-    }
-
-    // Check if destination is outside all region bboxes → partial route
-    const regionList = Array.isArray(regions) ? regions : [regions];
-    const destInCoverage = regionList.some(
-      (r) =>
-        destLat >= r.bbox.south &&
-        destLat <= r.bbox.north &&
-        destLng >= r.bbox.west &&
-        destLng <= r.bbox.east,
-    );
-    let partial: PartialRouteInfo | undefined;
-    if (!destInCoverage) {
-      const lastCoord = coordinates[coordinates.length - 1];
-      const remaining = haversine(lastCoord.lat, lastCoord.lng, destLat, destLng);
-      const bearing = bearingBetween(lastCoord.lat, lastCoord.lng, destLat, destLng);
-      partial = {
-        remainingStraightMeters: Math.round(remaining),
-        bearingDeg: Math.round(bearing),
-        cardinal: cardinalFromBearing(bearing),
-        reason: 'outside-mapped-area',
-        coveredMeters: Math.round(totalDistance),
-      };
-    }
-
-    const instructions = buildInstructions(graph, path, coordinates, mode);
-
-    return {
-      coordinates,
-      distanceMeters: Math.round(totalDistance),
-      durationSeconds: Math.round(totalDuration),
-      instructions,
-      mode,
-      routeType: prefs?.routeType ?? 'fastest',
-      partial,
-    };
-  }
-
-  // No path found — provide a straight-line fallback with guidance
-  return buildStraightLineRoute(startLat, startLng, destLat, destLng, mode, 'no-road-path');
+  const result = routeOfflineWithDiagnostics(startLat, startLng, destLat, destLng, mode, regions, { prefs, shouldAbort });
+  return result.route;
 }
 
-/**
- * Build a straight-line route with bearing guidance.
- * Used as a last-resort fallback when no road path exists.
- */
-function buildStraightLineRoute(
+export function routeOfflineWithDiagnostics(
   startLat: number,
   startLng: number,
   destLat: number,
   destLng: number,
   mode: TravelMode,
-  reason: string,
-): RouteResult {
-  const dist = haversine(startLat, startLng, destLat, destLng);
-  const bearing = bearingBetween(startLat, startLng, destLat, destLng);
-  const cardinal = cardinalFromBearing(bearing);
+  regions: OfflineRegionData | OfflineRegionData[] | OfflineRegion | OfflineRegion[],
+  options?: RouteOptions
+): { route: RouteResult | null; error: RouteError | null } {
+  const regionList = Array.isArray(regions) ? regions : [regions];
+  if (regionList.length === 0) {
+    return {
+      route: null,
+      error: { reason: 'no-region', message: 'No offline map regions installed.' },
+    };
+  }
+
+  const graph = buildGraph(regions);
+
+  if (graph.nodes.size === 0) {
+    return {
+      route: null,
+      error: { reason: 'corrupt-region', message: 'Installed region has no usable road network nodes.' },
+    };
+  }
+
+  const startInCoverage = isPointInGraph(startLat, startLng, graph);
+  const destInCoverage = isPointInGraph(destLat, destLng, graph);
+
+  if (!startInCoverage) {
+    return {
+      route: null,
+      error: {
+        reason: 'outside-coverage',
+        message: 'Your current location is outside installed offline map coverage.',
+      },
+    };
+  }
+
+  const startNode = nearestNode(graph, startLat, startLng);
+  const destNode = nearestNode(graph, destLat, destLng);
+
+  if (!startNode || !destNode) {
+    return {
+      route: null,
+      error: {
+        reason: 'nearest-road-not-found',
+        message: 'Could not snap starting point or destination to a nearby road.',
+      },
+    };
+  }
+
+  const straightLine = haversine(startLat, startLng, destLat, destLng);
+
+  // Same node → arrived
+  if (startNode.id === destNode.id) {
+    if (straightLine > 500) {
+      return {
+        route: null,
+        error: {
+          reason: 'no-road-path',
+          message: 'No connected road path found to your destination.',
+        },
+      };
+    }
+    return {
+      route: {
+        coordinates: [
+          { lat: startLat, lng: startLng },
+          { lat: destLat, lng: destLng },
+        ],
+        distanceMeters: Math.round(straightLine),
+        durationSeconds: Math.round((straightLine / 1000 / MODE_SPEEDS[mode]) * 3600),
+        instructions: [{
+          type: 'arrive',
+          roadName: 'Destination',
+          distanceMeters: 0,
+          cumulativeMeters: 0,
+          point: { lat: destLat, lng: destLng },
+        }],
+        mode,
+        source: 'offline',
+      },
+      error: null,
+    };
+  }
+
+  const path = aStar(graph, startNode.id, destNode.id, options?.prefs, options?.shouldAbort);
+
+  if (!path || path.length < 2) {
+    return {
+      route: null,
+      error: {
+        reason: 'no-road-path',
+        message: 'No connected road route found between start and destination in offline map data.',
+      },
+    };
+  }
+
+  // Build coordinates from path
+  let rawCoordinates: { lat: number; lng: number }[] = [];
+  for (const nodeId of path) {
+    const n = graph.nodes.get(nodeId)!;
+    rawCoordinates.push({ lat: n.lat, lng: n.lng });
+  }
+
+  const coordinates = simplifyRouteCoordinates(rawCoordinates, 5000);
+
+  // Calculate distance + duration
+  let totalDistance = 0;
+  let totalDuration = 0;
   const speed = MODE_SPEEDS[mode];
-  const duration = (dist / 1000 / speed) * 3600;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = graph.nodes.get(path[i])!;
+    const b = graph.nodes.get(path[i + 1])!;
+    const dist = haversine(a.lat, a.lng, b.lat, b.lng);
+    totalDistance += dist;
+    totalDuration += (dist / 1000 / speed) * 3600;
+  }
+
+  // Add access distances: start→startNode and destNode→dest
+  const startAccess = haversine(startLat, startLng, startNode.lat, startNode.lng);
+  const destAccess = haversine(destNode.lat, destNode.lng, destLat, destLng);
+  totalDistance += startAccess + destAccess;
+  totalDuration += ((startAccess + destAccess) / 1000 / speed) * 3600;
+
+  let partial: PartialRouteInfo | undefined;
+  if (!destInCoverage) {
+    const lastCoord = coordinates[coordinates.length - 1];
+    const remaining = haversine(lastCoord.lat, lastCoord.lng, destLat, destLng);
+    const bearing = bearingBetween(lastCoord.lat, lastCoord.lng, destLat, destLng);
+    partial = {
+      remainingStraightMeters: Math.round(remaining),
+      bearingDeg: Math.round(bearing),
+      cardinal: cardinalFromBearing(bearing),
+      reason: 'outside-mapped-area',
+      coveredMeters: Math.round(totalDistance),
+    };
+  }
+
+  const instructions = buildInstructions(graph, path, coordinates, mode);
 
   return {
-    coordinates: [
-      { lat: startLat, lng: startLng },
-      { lat: destLat, lng: destLng },
-    ],
-    distanceMeters: Math.round(dist),
-    durationSeconds: Math.round(duration),
-    instructions: [
-      {
-        type: 'depart',
-        roadName: `Head ${cardinal} toward destination`,
-        distanceMeters: Math.round(dist),
-        cumulativeMeters: 0,
-        point: { lat: startLat, lng: startLng },
-        spoken: `Head ${cardinal} toward your destination`,
-      },
-      {
-        type: 'arrive',
-        roadName: 'Destination',
-        distanceMeters: 0,
-        cumulativeMeters: Math.round(dist),
-        point: { lat: destLat, lng: destLng },
-        spoken: 'You have arrived at your destination',
-      },
-    ],
-    mode,
-    partial: {
-      remainingStraightMeters: Math.round(dist),
-      bearingDeg: Math.round(bearing),
-      cardinal,
-      reason,
-      coveredMeters: 0,
+    route: {
+      coordinates,
+      distanceMeters: Math.round(totalDistance),
+      durationSeconds: Math.round(totalDuration),
+      instructions,
+      mode,
+      source: 'offline',
+      routeType: options?.prefs?.routeType ?? 'fastest',
+      partial,
     },
+    error: null,
   };
 }
 
 /**
- * A* with binary heap. O(E log V).
+ * Caps coordinate geometry size to maxPoints using uniform downsampling.
+ */
+export function simplifyRouteCoordinates(
+  coords: { lat: number; lng: number }[],
+  maxPoints = 5000
+): { lat: number; lng: number }[] {
+  if (coords.length <= maxPoints) return coords;
+  const step = (coords.length - 1) / (maxPoints - 1);
+  const result: { lat: number; lng: number }[] = [];
+
+  for (let i = 0; i < maxPoints - 1; i++) {
+    const idx = Math.round(i * step);
+    result.push(coords[idx]);
+  }
+  result.push(coords[coords.length - 1]);
+  return result;
+}
+
+/**
+ * A* with binary heap and optional cancellation check.
  */
 function aStar(
   graph: RoadGraph,
   startId: number,
   goalId: number,
   prefs?: RoutingPreferences,
+  shouldAbort?: () => boolean
 ): number[] | null {
   const openHeap = new MinHeap();
   const cameFrom = new Map<number, number>();
@@ -228,6 +252,11 @@ function aStar(
 
   while (openHeap.size > 0 && iterations < maxIter) {
     iterations++;
+
+    if (iterations % 500 === 0 && shouldAbort?.()) {
+      return null;
+    }
+
     const [current] = openHeap.pop()!;
 
     if (closed.has(current)) continue;
@@ -301,7 +330,7 @@ function buildInstructions(
   graph: RoadGraph,
   path: number[],
   coords: { lat: number; lng: number }[],
-  mode: TravelMode,
+  mode: TravelMode
 ): TurnInstruction[] {
   const instructions: TurnInstruction[] = [];
 
@@ -328,11 +357,11 @@ function buildInstructions(
     if (prevName !== currName && currName) {
       const prevBearing = bearing(
         graph.nodes.get(path[i - 1])!,
-        graph.nodes.get(path[i])!,
+        graph.nodes.get(path[i])!
       );
       const newBearing = bearing(
         graph.nodes.get(path[i])!,
-        graph.nodes.get(path[i + 1])!,
+        graph.nodes.get(path[i + 1])!
       );
       const turnType = classifyTurn(prevBearing, newBearing);
 

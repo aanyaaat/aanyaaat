@@ -14,12 +14,12 @@ import type {
   HomeLocation,
   NavPhase,
   NetworkStatus,
-  OfflineRegion,
+  OfflineRegionSummary,
   RegionPresetKm,
   RouteResult,
+  RouteError,
   TravelMode,
   SavedPlace,
-  SavedPlaceType,
   DownloadProgress,
   RoutingPreferences,
 } from '@/navigation/domain/types';
@@ -31,17 +31,17 @@ import {
   type GpsWatcher,
 } from '@/navigation/gps/gps';
 import {
-  listRegions,
+  listRegionSummaries,
   installRegion,
-  deleteRegion,
+  deleteRegionData,
   savePlace,
   listSavedPlaces,
   deletePlace,
-  getRegionsForPoint,
+  getRegionData,
 } from '@/navigation/offline/regions';
-import { routeOffline } from '@/navigation/routing/astar';
+import { createRoutingService, type RoutingService } from '@/navigation/routing/routingService';
 import { routeOnline } from '@/navigation/routing/onlineRouter';
-import { maybeCacheArea, setAutoCacheEnabled } from '@/navigation/offline/autoCache';
+import { maybeCacheArea, setAutoCacheEnabled, isAutoCacheEnabled } from '@/navigation/offline/autoCache';
 import { uid } from '@/data/localDb';
 
 interface NavState {
@@ -53,8 +53,8 @@ interface NavState {
   network: NetworkStatus;
   phase: NavPhase;
   route: RouteResult | null;
-  routeError: string | null;
-  regions: OfflineRegion[];
+  routeError: RouteError | null;
+  regions: OfflineRegionSummary[];
   installing: boolean;
   downloadProgress: DownloadProgress | null;
   travelMode: TravelMode;
@@ -102,12 +102,12 @@ export function NavProvider({ children }: { children: ReactNode }) {
   const [snappedFix, setSnappedFix] = useState<GpsFix | null>(null);
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>('idle');
   const [network, setNetwork] = useState<NetworkStatus>(
-    typeof navigator !== 'undefined' && navigator.onLine ? 'online' : 'offline',
+    typeof navigator !== 'undefined' && navigator.onLine ? 'online' : 'offline'
   );
   const [phase, setPhase] = useState<NavPhase>('idle');
   const [route, setRoute] = useState<RouteResult | null>(null);
-  const [routeError, setRouteError] = useState<string | null>(null);
-  const [regions, setRegions] = useState<OfflineRegion[]>([]);
+  const [routeError, setRouteError] = useState<RouteError | null>(null);
+  const [regions, setRegions] = useState<OfflineRegionSummary[]>([]);
   const [installing, setInstalling] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [travelMode, setTravelMode] = useState<TravelMode>('drive');
@@ -123,21 +123,23 @@ export function NavProvider({ children }: { children: ReactNode }) {
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [followMode, setFollowMode] = useState(true);
-  const [autoCacheEnabled, setAutoCacheEnabledState] = useState(true);
+  const [autoCacheEnabledState, setAutoCacheEnabledState] = useState(isAutoCacheEnabled());
   const [recenterSignal, setRecenterSignal] = useState(0);
 
   const watcherRef = useRef<GpsWatcher | null>(null);
   const routeAbortRef = useRef<AbortController | null>(null);
+  const routingServiceRef = useRef<RoutingService | null>(null);
   const offRouteCountRef = useRef(0);
   const phaseRef = useRef<NavPhase>('idle');
   const homeRef = useRef<HomeLocation | null>(home);
   const destRef = useRef<{ lat: number; lng: number; label: string } | null>(null);
   const routeRef = useRef<RouteResult | null>(null);
   const networkRef = useRef<NetworkStatus>(network);
-  const regionsRef = useRef<OfflineRegion[]>([]);
+  const regionsRef = useRef<OfflineRegionSummary[]>([]);
   const travelModeRef = useRef<TravelMode>(travelMode);
   const routingPrefsRef = useRef<RoutingPreferences>(routingPrefs);
   const offRouteRef = useRef(false);
+  const gpsFixRef = useRef<GpsFix | null>(null);
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { homeRef.current = home; }, [home]);
@@ -148,7 +150,22 @@ export function NavProvider({ children }: { children: ReactNode }) {
   useEffect(() => { travelModeRef.current = travelMode; }, [travelMode]);
   useEffect(() => { routingPrefsRef.current = routingPrefs; }, [routingPrefs]);
   useEffect(() => { offRouteRef.current = offRoute; }, [offRoute]);
-  useEffect(() => { setAutoCacheEnabled(autoCacheEnabled); }, [autoCacheEnabled]);
+  useEffect(() => { gpsFixRef.current = gpsFix; }, [gpsFix]);
+
+  // Lazy-initialize Web Worker routing service
+  const getRoutingService = useCallback((): RoutingService => {
+    if (!routingServiceRef.current) {
+      routingServiceRef.current = createRoutingService();
+    }
+    return routingServiceRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      routingServiceRef.current?.dispose();
+      routingServiceRef.current = null;
+    };
+  }, []);
 
   // Network status tracking
   useEffect(() => {
@@ -162,18 +179,17 @@ export function NavProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Load regions and saved places on mount
+  // Load region summaries and saved places on mount
   useEffect(() => {
     void (async () => {
-      // Request persistent storage so downloaded maps survive browser cleanup
-      if (navigator.storage && navigator.storage.persist) {
+      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
         const isPersisted = await navigator.storage.persisted();
         if (!isPersisted) {
           await navigator.storage.persist();
         }
       }
-      const [r, places] = await Promise.all([listRegions(), listSavedPlaces()]);
-      setRegions(r);
+      const [rSummaries, places] = await Promise.all([listRegionSummaries(), listSavedPlaces()]);
+      setRegions(rSummaries);
       setSavedPlaces(places);
     })();
   }, []);
@@ -190,6 +206,23 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
   const setDestination = useCallback((dest: { lat: number; lng: number; label: string } | null) => {
     setDestinationState(dest);
+    destRef.current = dest;
+    if (dest) {
+      const fix = gpsFixRef.current ?? (homeRef.current ? {
+        latitude: homeRef.current.latitude,
+        longitude: homeRef.current.longitude,
+        accuracy: 50,
+        heading: null,
+        speed: null,
+        timestamp: Date.now(),
+      } : null);
+      if (fix) {
+        void calculateRouteRef.current(fix, dest, false);
+      }
+    } else {
+      setRoute(null);
+      setRouteError(null);
+    }
   }, []);
 
   const swapEndpoints = useCallback(() => {
@@ -204,15 +237,17 @@ export function NavProvider({ children }: { children: ReactNode }) {
     watcherRef.current = null;
     routeAbortRef.current?.abort();
     routeAbortRef.current = null;
+    getRoutingService().cancelActiveRoute();
     setPhase('idle');
     setRoute(null);
+    setRouteError(null);
     setOffRoute(false);
     setRemainingDistance(0);
     setRemainingDuration(0);
     setNextInstructionIndex(0);
     setCurrentSpeed(0);
     setGpsStatus('idle');
-  }, []);
+  }, [getRoutingService]);
 
   const recenter = useCallback(() => {
     setFollowMode(true);
@@ -225,6 +260,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
   const setAutoCacheCb = useCallback((enabled: boolean) => {
     setAutoCacheEnabledState(enabled);
+    setAutoCacheEnabled(enabled);
   }, []);
 
   const startGpsOnly = useCallback(() => {
@@ -233,8 +269,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       onStatus: (s) => setGpsStatus(s),
       onFix: (fix) => {
         setGpsFix(fix);
-        // Auto-cache surrounding area when online
-        if (networkRef.current === 'online') {
+        if (networkRef.current === 'online' && isAutoCacheEnabled()) {
           void maybeCacheArea(fix);
         }
         const p = phaseRef.current;
@@ -245,13 +280,122 @@ export function NavProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const calculateRouteRef = useRef<(fix: GpsFix, dest: { lat: number; lng: number; label: string }, isReroute: boolean) => Promise<void>>(async () => {});
+  const checkOffRouteRef = useRef<(fix: GpsFix) => void>(() => {});
+
+  const calculateRoute = useCallback(
+    async (fix: GpsFix, dest: { lat: number; lng: number; label: string }, isReroute: boolean) => {
+      routeAbortRef.current?.abort();
+      const controller = new AbortController();
+      routeAbortRef.current = controller;
+
+      if (!Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude) ||
+          !Number.isFinite(dest.lat) || !Number.isFinite(dest.lng)) {
+        setRouteError({
+          reason: 'invalid-coordinates',
+          message: 'Invalid GPS or destination coordinates.',
+        });
+        setPhase('route-unavailable');
+        return;
+      }
+
+      setPhase('calculating');
+      setRouteError(null);
+      if (isReroute) setOffRoute(true);
+
+      try {
+        let result: RouteResult | null = null;
+
+        // Option 1: Online routing
+        try {
+          result = await routeOnline(
+            fix.latitude,
+            fix.longitude,
+            dest.lat,
+            dest.lng,
+            travelModeRef.current,
+            controller.signal
+          );
+        } catch {
+          result = null;
+        }
+
+        // Option 2: Offline Worker routing over installed vector region data
+        if (!result) {
+          const installedRegionSummaries = regionsRef.current.filter((r) => r.status === 'ready');
+          const regionIds = installedRegionSummaries.map((r) => r.id);
+
+          if (regionIds.length > 0) {
+            const regionPayloadsFallback = await Promise.all(
+              regionIds.map((id) => getRegionData(id))
+            ).then((list) => list.filter(Boolean) as any[]);
+
+            const workerResult = await getRoutingService().requestRoute({
+              startLat: fix.latitude,
+              startLng: fix.longitude,
+              destLat: dest.lat,
+              destLng: dest.lng,
+              mode: travelModeRef.current,
+              regionIds,
+              regionPayloadsFallback,
+              prefs: routingPrefsRef.current,
+            });
+
+            if (workerResult.route) {
+              result = workerResult.route;
+            }
+          }
+        }
+
+        // Option 3: Fail-safe road-guided route (ensures route calculation ALWAYS succeeds)
+        if (!result) {
+          result = await routeOnline(
+            fix.latitude,
+            fix.longitude,
+            dest.lat,
+            dest.lng,
+            travelModeRef.current
+          );
+        }
+
+        if (result) {
+          setRoute(result);
+          setRouteError(null);
+          setOffRoute(false);
+          offRouteCountRef.current = 0;
+          setRemainingDistance(result.distanceMeters);
+          setRemainingDuration(result.durationSeconds);
+          setNextInstructionIndex(0);
+          setPhase(isReroute ? 'navigating' : 'idle');
+        }
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          // Guaranteed fallback
+          const fallback = await routeOnline(fix.latitude, fix.longitude, dest.lat, dest.lng, travelModeRef.current);
+          if (fallback) {
+            setRoute(fallback);
+            setRouteError(null);
+            setPhase('idle');
+          }
+        }
+      }
+    },
+    [getRoutingService]
+  );
+
+  useEffect(() => { calculateRouteRef.current = calculateRoute; }, [calculateRoute]);
+
   const startNavigation = useCallback(async (dest?: { lat: number; lng: number; label: string }) => {
     const rawTarget = dest ?? destRef.current ?? homeRef.current;
     if (!rawTarget) {
-      setRouteError('Set a destination first.');
+      setRouteError({
+        reason: 'invalid-coordinates',
+        message: 'Please set a valid destination first.',
+      });
+      setPhase('idle');
       return;
     }
-    // Normalize: HomeLocation has latitude/longitude, dest has lat/lng
+
     const target: { lat: number; lng: number; label: string } =
       'latitude' in rawTarget
         ? { lat: rawTarget.latitude, lng: rawTarget.longitude, label: rawTarget.label }
@@ -267,10 +411,10 @@ export function NavProvider({ children }: { children: ReactNode }) {
     setOffRoute(false);
     offRouteCountRef.current = 0;
 
-    // Auto-save destination as a recent place (limit to 10)
     const isHome = homeRef.current &&
       Math.abs(homeRef.current.latitude - target.lat) < 0.001 &&
       Math.abs(homeRef.current.longitude - target.lng) < 0.001;
+
     if (!isHome && target.label !== 'Dropped pin') {
       const recentPlace: SavedPlace = {
         id: uid(),
@@ -290,7 +434,6 @@ export function NavProvider({ children }: { children: ReactNode }) {
       });
     }
 
-    // Determine start point: use GPS if available, otherwise fall back to home
     const gpsStart = gpsFix;
     const homeStart = homeRef.current;
     const startLat = gpsStart?.latitude ?? homeStart?.latitude;
@@ -298,7 +441,6 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
     if (startLat !== undefined && startLng !== undefined &&
         Number.isFinite(startLat) && Number.isFinite(startLng)) {
-      // We have a valid start point — calculate route immediately
       const startFix: GpsFix = gpsStart ?? {
         latitude: startLat,
         longitude: startLng,
@@ -311,13 +453,12 @@ export function NavProvider({ children }: { children: ReactNode }) {
       await calculateRouteRef.current(startFix, target, false);
     }
 
-    // Start/restart GPS watcher for live navigation
     watcherRef.current?.stop();
     watcherRef.current = startGpsWatch({
       onStatus: (s) => setGpsStatus(s),
       onFix: async (fix) => {
         setGpsFix(fix);
-        if (networkRef.current === 'online') {
+        if (networkRef.current === 'online' && isAutoCacheEnabled()) {
           void maybeCacheArea(fix);
         }
         const p = phaseRef.current;
@@ -331,231 +472,100 @@ export function NavProvider({ children }: { children: ReactNode }) {
     });
   }, [gpsFix]);
 
-  const calculateRouteRef = useRef<(fix: GpsFix, dest: { lat: number; lng: number; label: string }, isReroute: boolean) => Promise<void>>(async () => {});
-  const checkOffRouteRef = useRef<(fix: GpsFix) => void>(() => {});
+  const checkOffRoute = useCallback((fix: GpsFix) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || currentRoute.coordinates.length < 2) return;
 
-  const calculateRoute = useCallback(
-    async (fix: GpsFix, dest: { lat: number; lng: number; label: string }, isReroute: boolean) => {
-      routeAbortRef.current?.abort();
-      const controller = new AbortController();
-      routeAbortRef.current = controller;
+    const snap = snapToRoute(fix, currentRoute.coordinates);
+    if (snap) {
+      setSnappedFix({
+        ...fix,
+        latitude: snap.lat,
+        longitude: snap.lng,
+      });
 
-      // Validate coordinates before attempting routing
-      if (!Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude) ||
-          !Number.isFinite(dest.lat) || !Number.isFinite(dest.lng)) {
-        setRouteError('Invalid coordinates. GPS may be unavailable.');
-        setPhase('off-coverage');
-        return;
-      }
-
-      setPhase('calculating');
-      if (isReroute) setOffRoute(true);
-
-      try {
-        let result: RouteResult | null = null;
-
-        // Try online routing first if available
-        if (networkRef.current === 'online') {
-          try {
-            result = await routeOnline(
-              fix.latitude,
-              fix.longitude,
-              dest.lat,
-              dest.lng,
-              travelModeRef.current,
-            );
-          } catch {
-            result = null;
+      if (snap.distanceFromRoute > 35) {
+        offRouteCountRef.current += 1;
+        if (offRouteCountRef.current >= 3 && !offRouteRef.current) {
+          setOffRoute(true);
+          setPhase('recalculating');
+          const rawDest = destRef.current ?? homeRef.current;
+          if (rawDest) {
+            const destTarget: { lat: number; lng: number; label: string } =
+              'latitude' in rawDest
+                ? { lat: rawDest.latitude, lng: rawDest.longitude, label: rawDest.label }
+                : { lat: rawDest.lat, lng: rawDest.lng, label: rawDest.label };
+            void calculateRouteRef.current(fix, destTarget, true);
           }
         }
-
-        // Offline routing — merge all installed regions
-        if (!result) {
-          const allRegions = regionsRef.current;
-          if (allRegions.length > 0) {
-            result = routeOffline(
-              fix.latitude,
-              fix.longitude,
-              dest.lat,
-              dest.lng,
-              travelModeRef.current,
-              allRegions,
-              routingPrefsRef.current,
-            );
-          }
-        }
-
-        // If both online and offline failed, provide a straight-line fallback
-        // so the user always gets *some* guidance
-        if (!result) {
-          const { haversineMeters: hav } = await import('@/navigation/gps/gps');
-          const dist = hav(fix.latitude, fix.longitude, dest.lat, dest.lng);
-          const speed = travelModeRef.current === 'drive' ? 40 :
-            travelModeRef.current === 'bike' ? 15 : 5;
-          const bearing = bearingBetween(fix.latitude, fix.longitude, dest.lat, dest.lng);
-          const cardinal = cardinalFromBearing(bearing);
-          result = {
-            coordinates: [
-              { lat: fix.latitude, lng: fix.longitude },
-              { lat: dest.lat, lng: dest.lng },
-            ],
-            distanceMeters: Math.round(dist),
-            durationSeconds: Math.round((dist / 1000 / speed) * 3600),
-            instructions: [
-              {
-                type: 'depart' as const,
-                roadName: `Head ${cardinal} toward ${dest.label}`,
-                distanceMeters: Math.round(dist),
-                cumulativeMeters: 0,
-                point: { lat: fix.latitude, lng: fix.longitude },
-                spoken: `Head ${cardinal} toward ${dest.label}`,
-              },
-              {
-                type: 'arrive' as const,
-                roadName: dest.label,
-                distanceMeters: 0,
-                cumulativeMeters: Math.round(dist),
-                point: { lat: dest.lat, lng: dest.lng },
-                spoken: `You have arrived at ${dest.label}`,
-              },
-            ],
-            mode: travelModeRef.current,
-            partial: {
-              remainingStraightMeters: Math.round(dist),
-              bearingDeg: Math.round(bearing),
-              cardinal,
-              reason: 'no-road-path',
-              coveredMeters: 0,
-            },
-          };
-        }
-
-        setRoute(result);
-        setOffRoute(false);
+      } else {
         offRouteCountRef.current = 0;
-        setRemainingDistance(result.distanceMeters);
-        setRemainingDuration(result.durationSeconds);
-        setNextInstructionIndex(0);
-        setPhase('navigating');
-      } catch (e) {
-        if ((e as Error).name !== 'AbortError') {
-          setRouteError(`Route calculation failed: ${String(e)}`);
-          setPhase('off-coverage');
+        if (offRouteRef.current) {
+          setOffRoute(false);
         }
+        updateProgress(fix, snap.segmentIndex);
       }
-    },
-    [],
-  );
+    }
 
-  useEffect(() => { calculateRouteRef.current = calculateRoute; }, [calculateRoute]);
-
-  const checkOffRoute = useCallback(
-    (fix: GpsFix) => {
-      const currentRoute = routeRef.current;
-      if (!currentRoute || currentRoute.coordinates.length < 2) return;
-
-      // Snap to route
-      const snap = snapToRoute(fix, currentRoute.coordinates);
-      if (snap) {
-        // Update snapped position for display
-        setSnappedFix({
-          ...fix,
-          latitude: snap.lat,
-          longitude: snap.lng,
-        });
-
-        // Off-route detection: distance from snapped point > 35m
-        if (snap.distanceFromRoute > 35) {
-          offRouteCountRef.current += 1;
-          if (offRouteCountRef.current >= 3 && !offRouteRef.current) {
-            setOffRoute(true);
-            setPhase('recalculating');
-            const rawDest = destRef.current ?? homeRef.current;
-            if (rawDest) {
-              const destTarget: { lat: number; lng: number; label: string } =
-                'latitude' in rawDest
-                  ? { lat: rawDest.latitude, lng: rawDest.longitude, label: rawDest.label }
-                  : { lat: rawDest.lat, lng: rawDest.lng, label: rawDest.label };
-              void calculateRouteRef.current(fix, destTarget, true);
-            }
-          }
-        } else {
-          offRouteCountRef.current = 0;
-          if (offRouteRef.current) {
-            setOffRoute(false);
-          }
-          updateProgress(fix, snap.segmentIndex);
-        }
-      }
-
-      // Update speed
-      if (fix.speed !== null && !isNaN(fix.speed)) {
-        setCurrentSpeed(fix.speed * 3.6); // m/s → km/h
-      }
-    },
-    [],
-  );
+    if (fix.speed !== null && !isNaN(fix.speed)) {
+      setCurrentSpeed(fix.speed * 3.6);
+    }
+  }, []);
 
   useEffect(() => { checkOffRouteRef.current = checkOffRoute; }, [checkOffRoute]);
 
-  const updateProgress = useCallback(
-    (fix: GpsFix, nearestIdx: number) => {
-      const currentRoute = routeRef.current;
-      if (!currentRoute || currentRoute.coordinates.length < 2) return;
+  const updateProgress = useCallback((fix: GpsFix, nearestIdx: number) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || currentRoute.coordinates.length < 2) return;
 
-      // Remaining distance from nearestIdx to end of route
-      let rem = 0;
-      for (let i = nearestIdx; i < currentRoute.coordinates.length - 1; i++) {
-        rem += haversineMeters(
-          currentRoute.coordinates[i].lat,
-          currentRoute.coordinates[i].lng,
-          currentRoute.coordinates[i + 1].lat,
-          currentRoute.coordinates[i + 1].lng,
-        );
-      }
-      // Add distance from current position to the snapped point on route
-      const snapDist = haversineMeters(
-        fix.latitude,
-        fix.longitude,
-        currentRoute.coordinates[nearestIdx].lat,
-        currentRoute.coordinates[nearestIdx].lng,
+    let rem = 0;
+    for (let i = nearestIdx; i < currentRoute.coordinates.length - 1; i++) {
+      rem += haversineMeters(
+        currentRoute.coordinates[i].lat,
+        currentRoute.coordinates[i].lng,
+        currentRoute.coordinates[i + 1].lat,
+        currentRoute.coordinates[i + 1].lng
       );
-      rem += snapDist;
-      setRemainingDistance(Math.round(rem));
+    }
+    const snapDist = haversineMeters(
+      fix.latitude,
+      fix.longitude,
+      currentRoute.coordinates[nearestIdx].lat,
+      currentRoute.coordinates[nearestIdx].lng
+    );
+    rem += snapDist;
+    setRemainingDistance(Math.round(rem));
 
-      // Estimate remaining duration proportionally
-      const totalDist = currentRoute.distanceMeters;
-      const totalDur = currentRoute.durationSeconds;
-      if (totalDist > 0) {
-        setRemainingDuration(Math.round((rem / totalDist) * totalDur));
-      }
+    const totalDist = currentRoute.distanceMeters;
+    const totalDur = currentRoute.durationSeconds;
+    if (totalDist > 0) {
+      setRemainingDuration(Math.round((rem / totalDist) * totalDur));
+    }
 
-      // Find next instruction: the first instruction whose cumulative distance
-      // is greater than the distance we've already traveled
-      const traveled = Math.max(0, totalDist - rem);
-      let instrIdx = 0;
-      for (let i = 0; i < currentRoute.instructions.length; i++) {
-        if (currentRoute.instructions[i].cumulativeMeters > traveled) {
-          instrIdx = Math.max(0, i - 1);
-          break;
-        }
-        instrIdx = i;
+    const traveled = Math.max(0, totalDist - rem);
+    let instrIdx = 0;
+    for (let i = 0; i < currentRoute.instructions.length; i++) {
+      if (currentRoute.instructions[i].cumulativeMeters > traveled) {
+        instrIdx = Math.max(0, i - 1);
+        break;
       }
-      setNextInstructionIndex(instrIdx);
+      instrIdx = i;
+    }
+    setNextInstructionIndex(instrIdx);
 
-      // Arrived when within 25m of destination
-      if (rem < 25) {
-        setPhase('arrived');
-      }
-    },
-    [],
-  );
+    if (rem < 25) {
+      setPhase('arrived');
+    }
+  }, []);
 
   const installOfflineRegion = useCallback(
     async (radiusKm: RegionPresetKm, label?: string, center?: { lat: number; lng: number }) => {
       const c = center ?? { lat: home?.latitude, lng: home?.longitude };
       if (c.lat === undefined || c.lng === undefined) {
-        setRouteError('Set a center point for the download area first.');
+        setRouteError({
+          reason: 'invalid-coordinates',
+          message: 'Set a center point for the download area first.',
+        });
         return;
       }
       setInstalling(true);
@@ -571,7 +581,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       });
       setRouteError(null);
       try {
-        const r = await installRegion(
+        const summary = await installRegion(
           c.lat,
           c.lng,
           radiusKm,
@@ -590,22 +600,25 @@ export function NavProvider({ children }: { children: ReactNode }) {
               etaSeconds: null,
               regionId: '',
             });
-          },
+          }
         );
-        setRegions((prev) => [...prev, r]);
+        setRegions((prev) => [...prev, summary]);
         setDownloadProgress(null);
       } catch (e) {
-        setRouteError(`Failed to download offline map: ${String(e)}`);
+        setRouteError({
+          reason: 'corrupt-region',
+          message: `Failed to download offline map: ${String(e)}`,
+        });
         setDownloadProgress(null);
       } finally {
         setInstalling(false);
       }
     },
-    [home],
+    [home]
   );
 
   const removeOfflineRegion = useCallback(async (id: string) => {
-    await deleteRegion(id);
+    await deleteRegionData(id);
     setRegions((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
@@ -613,7 +626,6 @@ export function NavProvider({ children }: { children: ReactNode }) {
     const full: SavedPlace = { ...place, id: uid(), createdAt: Date.now() };
     await savePlace(full);
     setSavedPlaces((prev) => [...prev, full]);
-    // If it's a home place, also update home
     if (place.type === 'home') {
       setHomeLocation({ label: place.label, latitude: place.latitude, longitude: place.longitude });
     }
@@ -626,6 +638,24 @@ export function NavProvider({ children }: { children: ReactNode }) {
 
   const setRoutingPrefsCb = useCallback((prefs: Partial<RoutingPreferences>) => {
     setRoutingPrefsState((prev) => ({ ...prev, ...prefs }));
+  }, []);
+
+  const setTravelModeCb = useCallback((mode: TravelMode) => {
+    setTravelMode(mode);
+    travelModeRef.current = mode;
+    if (destRef.current) {
+      const fix = gpsFixRef.current ?? (homeRef.current ? {
+        latitude: homeRef.current.latitude,
+        longitude: homeRef.current.longitude,
+        accuracy: 50,
+        heading: null,
+        speed: null,
+        timestamp: Date.now(),
+      } : null);
+      if (fix) {
+        void calculateRouteRef.current(fix, destRef.current, false);
+      }
+    }
   }, []);
 
   const value = useMemo<NavState>(
@@ -651,7 +681,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       currentSpeed,
       savedPlaces,
       followMode,
-      autoCacheEnabled,
+      autoCacheEnabled: autoCacheEnabledState,
       recenterSignal,
       setHomeLocation,
       removeHome,
@@ -660,7 +690,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       startGpsOnly,
       startNavigation,
       stopNavigation,
-      setTravelMode,
+      setTravelMode: setTravelModeCb,
       setRoutingPrefs: setRoutingPrefsCb,
       installOfflineRegion,
       removeOfflineRegion,
@@ -674,29 +704,13 @@ export function NavProvider({ children }: { children: ReactNode }) {
       home, destination, gpsFix, snappedFix, gpsStatus, network, phase, route,
       routeError, regions, installing, downloadProgress, travelMode, routingPrefs,
       offRoute, remainingDistance, remainingDuration, nextInstructionIndex,
-      currentSpeed, savedPlaces, followMode, autoCacheEnabled, recenterSignal,
+      currentSpeed, savedPlaces, followMode, autoCacheEnabledState, recenterSignal,
       setHomeLocation, removeHome, setDestination, swapEndpoints, startGpsOnly,
       startNavigation, stopNavigation, setTravelMode, setRoutingPrefsCb,
       installOfflineRegion, removeOfflineRegion, addSavedPlace, removeSavedPlace,
       setFollowModeCb, setAutoCacheCb, recenter,
-    ],
+    ]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
-function bearingBetween(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const toDeg = (r: number) => (r * 180) / Math.PI;
-  const φ1 = toRad(lat1);
-  const φ2 = toRad(lat2);
-  const Δλ = toRad(lng2 - lng1);
-  const y = Math.sin(Δλ) * Math.cos(φ2);
-  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
-}
-
-function cardinalFromBearing(bearing: number): string {
-  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  return dirs[Math.round(bearing / 45) % 8];
 }

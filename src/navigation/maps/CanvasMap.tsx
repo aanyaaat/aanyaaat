@@ -1,8 +1,26 @@
 import { useEffect, useRef, useCallback } from 'react';
-import type { OfflineRegion, RouteResult, GpsFix, HomeLocation, SavedPlace } from '@/navigation/domain/types';
-import { project, unproject, metersPerPixel, type Viewport } from '@/navigation/maps/projection';
+import type {
+  OfflineRegionSummary,
+  RouteResult,
+  GpsFix,
+  HomeLocation,
+  SavedPlace,
+} from '@/navigation/domain/types';
+import {
+  project,
+  unproject,
+  panViewportByPixels,
+  zoomViewportAtPixel,
+  metersPerPixel,
+  viewportBounds,
+  lngToGlobalX,
+  latToGlobalY,
+  type Viewport,
+} from '@/navigation/maps/projection';
+import { regionDataManager } from '@/navigation/maps/regionDataManager';
+import { getTileUrl, getCachedTile, getParentTileFallback, loadTile, prefetchSurroundingTiles } from '@/navigation/maps/tileCache';
 
-export type MapStyle = 'standard' | 'satellite' | 'terrain' | 'dark' | 'transit';
+export type MapStyle = 'standard' | 'dark';
 
 interface PoiMarker {
   lat: number;
@@ -12,7 +30,7 @@ interface PoiMarker {
 }
 
 interface CanvasMapProps {
-  regions: OfflineRegion[];
+  regions: OfflineRegionSummary[];
   route: RouteResult | null;
   gpsFix: GpsFix | null;
   home: HomeLocation | null;
@@ -28,92 +46,13 @@ interface CanvasMapProps {
   onSelectPin?: (pin: { lat: number; lng: number; label: string; type: string }) => void;
 }
 
-const TILE_SIZE = 256;
-const tileCache = new Map<string, HTMLImageElement>();
-const tileLoading = new Set<string>();
-const tileCallbacks = new Map<string, Array<(img: HTMLImageElement | null) => void>>();
-
-function tileUrl(z: number, x: number, y: number, style: MapStyle): string {
-  switch (style) {
-    case 'satellite':
-      return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
-    case 'terrain':
-      return `https://tile.opentopomap.org/${z}/${x}/${y}.png`;
-    case 'dark':
-      return `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
-    case 'transit':
-      return `https://a.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
-    case 'standard':
-    default:
-      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-  }
-}
-
-function loadTile(z: number, x: number, y: number, style: MapStyle): Promise<HTMLImageElement | null> {
-  const key = `${style}/${z}/${x}/${y}`;
-  const cached = tileCache.get(key);
-  if (cached && cached.complete) return Promise.resolve(cached);
-  if (tileLoading.has(key)) {
-    return new Promise((resolve) => {
-      const cbs = tileCallbacks.get(key) ?? [];
-      cbs.push(resolve);
-      tileCallbacks.set(key, cbs);
-    });
-  }
-
-  tileLoading.add(key);
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      tileCache.set(key, img);
-      tileLoading.delete(key);
-      resolve(img);
-      const cbs = tileCallbacks.get(key);
-      if (cbs) {
-        for (const cb of cbs) cb(img);
-        tileCallbacks.delete(key);
-      }
-    };
-    img.onerror = () => {
-      tileLoading.delete(key);
-      resolve(null);
-      const cbs = tileCallbacks.get(key);
-      if (cbs) {
-        for (const cb of cbs) cb(null);
-        tileCallbacks.delete(key);
-      }
-    };
-    img.src = tileUrl(z, x, y, style);
-  });
-}
-
-function pruneTileCache() {
-  if (tileCache.size > 400) {
-    const keys = Array.from(tileCache.keys());
-    for (let i = 0; i < 150; i++) tileCache.delete(keys[i]);
-  }
-}
-
-function lngToTileX(lng: number, z: number): number {
-  return ((lng + 180) / 360) * Math.pow(2, z);
-}
-
-function latToTileY(lat: number, z: number): number {
-  const rad = (lat * Math.PI) / 180;
-  return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z);
-}
-
 const ROAD_COLORS: Record<number, string> = {
   7: '#e892a2', 6: '#f2a678', 5: '#ffc090', 4: '#ffd8a8',
   3: '#e8e0d0', 2: '#d8d0c0', 1: '#c8c0b8',
 };
+
 const ROAD_WIDTHS: Record<number, number> = {
   7: 5, 6: 4.5, 5: 3.5, 4: 2.5, 3: 2, 2: 1.5, 1: 1,
-};
-const ROAD_CASING: Record<number, string> = {
-  7: '#c87888', 6: '#d08858', 5: '#d89868', 4: '#d8a878',
-  3: '#c0b0a0', 2: '#b8b0a0', 1: '#a8a098',
 };
 
 const POI_COLORS: Record<string, string> = {
@@ -126,8 +65,20 @@ const POI_COLORS: Record<string, string> = {
 interface PointerInfo { id: number; x: number; y: number; }
 
 export function CanvasMap({
-  regions, route, gpsFix, home, destination, savedPlaces, poiMarkers = [],
-  recenterSignal, followMode, rotation, mapStyle = 'standard', onTap, onLongPress, onSelectPin,
+  regions,
+  route,
+  gpsFix,
+  home,
+  destination,
+  savedPlaces,
+  poiMarkers = [],
+  recenterSignal,
+  followMode,
+  rotation,
+  mapStyle = 'standard',
+  onTap,
+  onLongPress,
+  onSelectPin,
 }: CanvasMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vpRef = useRef<Viewport>({
@@ -137,517 +88,481 @@ export function CanvasMap({
     width: 400,
     height: 400,
   });
+
   const pointersRef = useRef<Map<number, PointerInfo>>(new Map());
   const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
-  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  const pinchRef = useRef<{ dist: number; zoom: number; anchorX: number; anchorY: number } | null>(null);
   const userPannedRef = useRef(false);
   const rafRef = useRef<number | null>(null);
-  const dataRef = useRef({ regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, rotation, mapStyle });
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const animRef = useRef<{ fromZoom: number; toZoom: number; start: number; duration: number } | null>(null);
-  const initializedRef = useRef(false);
 
-  dataRef.current = { regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, rotation, mapStyle };
+  const propsRef = useRef({
+    regions,
+    route,
+    gpsFix,
+    home,
+    destination,
+    savedPlaces,
+    poiMarkers,
+    followMode,
+    mapStyle,
+    onTap,
+    onLongPress,
+    onSelectPin,
+  });
 
-  const draw = useCallback(() => {
+  useEffect(() => {
+    propsRef.current = {
+      regions,
+      route,
+      gpsFix,
+      home,
+      destination,
+      savedPlaces,
+      poiMarkers,
+      followMode,
+      mapStyle,
+      onTap,
+      onLongPress,
+      onSelectPin,
+    };
+  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, followMode, mapStyle, onTap, onLongPress, onSelectPin]);
+
+  const requestRender = useCallback(() => {
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        renderMap();
+      });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
+    if (curGps && !userPannedRef.current) {
+      vpRef.current.centerLat = curGps.latitude;
+      vpRef.current.centerLng = curGps.longitude;
+      requestRender();
+    }
+  }, [recenterSignal, gpsFix, home, requestRender]);
+
+  useEffect(() => {
+    if (destination && !userPannedRef.current) {
+      vpRef.current.centerLat = destination.lat;
+      vpRef.current.centerLng = destination.lng;
+      requestRender();
+    }
+  }, [destination, requestRender]);
+
+  const renderMap = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
-    if (w <= 0 || h <= 0) return;
-
-    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-    }
-
     const vp = vpRef.current;
-    vp.width = w;
-    vp.height = h;
+    const props = propsRef.current;
+    const isDark = props.mapStyle === 'dark';
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // 1. Clear background
+    ctx.fillStyle = isDark ? '#191a1a' : '#f0efe9';
+    ctx.fillRect(0, 0, vp.width, vp.height);
 
-    const data = dataRef.current;
-    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+    // 2. Basemap Raster Tiles
+    const tileZoom = Math.max(0, Math.min(19, Math.floor(vp.zoom)));
+    const tileScale = Math.pow(2, vp.zoom - tileZoom);
+    const tileSize = 256 * tileScale;
 
-    // Background based on style
-    ctx.fillStyle = data.mapStyle === 'dark' ? '#121216' : data.mapStyle === 'satellite' ? '#0b0f19' : '#e8e4dd';
-    ctx.fillRect(0, 0, w, h);
+    const halfW = vp.width / 2;
+    const halfH = vp.height / 2;
 
-    if (rotation !== 0) {
-      ctx.translate(w / 2, h / 2);
-      ctx.rotate((rotation * Math.PI) / 180);
-      ctx.translate(-w / 2, -h / 2);
-    }
+    const globalCenterPxX = lngToGlobalX(vp.centerLng, tileZoom) * tileScale;
+    const globalCenterPxY = latToGlobalY(vp.centerLat, tileZoom) * tileScale;
 
-    // Draw tiles
-    drawTiles(ctx, vp, w, h, data.mapStyle);
+    const minTileX = Math.floor((globalCenterPxX - halfW) / tileSize);
+    const maxTileX = Math.floor((globalCenterPxX + halfW) / tileSize);
+    const minTileY = Math.floor((globalCenterPxY - halfH) / tileSize);
+    const maxTileY = Math.floor((globalCenterPxY + halfH) / tileSize);
 
-    // Draw offline vector data if present
-    if (data.regions.length > 0) {
-      drawOfflineData(ctx, vp, w, h, data);
-    }
+    for (let tx = minTileX; tx <= maxTileX; tx++) {
+      for (let ty = minTileY; ty <= maxTileY; ty++) {
+        const screenX = halfW + (tx * tileSize - globalCenterPxX);
+        const screenY = halfH + (ty * tileSize - globalCenterPxY);
 
-    // Draw markers and route
-    drawMarkers(ctx, vp, w, h, data);
-  }, []);
-
-  const scheduleDraw = useCallback(() => {
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      draw();
-    });
-  }, [draw]);
-
-  function drawTiles(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number, style: MapStyle) {
-    const z = Math.max(0, Math.min(19, Math.floor(vp.zoom)));
-    const fracX = lngToTileX(vp.centerLng, z);
-    const fracY = latToTileY(vp.centerLat, z);
-
-    const numX = Math.ceil(w / TILE_SIZE) + 2;
-    const numY = Math.ceil(h / TILE_SIZE) + 2;
-
-    const startTx = Math.floor(fracX - numX / 2);
-    const startTy = Math.floor(fracY - numY / 2);
-    const endTx = Math.ceil(fracX + numX / 2);
-    const endTy = Math.ceil(fracY + numY / 2);
-    const maxTile = Math.pow(2, z);
-
-    let needsRedraw = false;
-
-    for (let tx = startTx; tx <= endTx; tx++) {
-      for (let ty = startTy; ty <= endTy; ty++) {
-        if (tx < 0 || ty < 0 || tx >= maxTile || ty >= maxTile) continue;
-
-        const drawX = Math.round((tx - fracX) * TILE_SIZE + w / 2);
-        const drawY = Math.round((ty - fracY) * TILE_SIZE + h / 2);
-
-        const key = `${style}/${z}/${tx}/${ty}`;
-        const cached = tileCache.get(key);
-        if (cached && cached.complete) {
-          try {
-            ctx.drawImage(cached, drawX, drawY, TILE_SIZE, TILE_SIZE);
-          } catch {
-            // ignore
+        const cachedImg = getCachedTile(tileZoom, tx, ty, isDark);
+        if (cachedImg) {
+          ctx.drawImage(cachedImg, screenX, screenY, tileSize, tileSize);
+        } else {
+          // Parent tile fallback for 0-delay smooth scrolling
+          const fallback = getParentTileFallback(tileZoom, tx, ty, isDark);
+          if (fallback) {
+            ctx.drawImage(
+              fallback.img,
+              fallback.cropX,
+              fallback.cropY,
+              fallback.cropSize,
+              fallback.cropSize,
+              screenX,
+              screenY,
+              tileSize,
+              tileSize
+            );
+          } else {
+            ctx.fillStyle = isDark ? '#242526' : '#e8e7e1';
+            ctx.fillRect(screenX, screenY, tileSize, tileSize);
+            ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+            ctx.strokeRect(screenX, screenY, tileSize, tileSize);
           }
-        } else if (!tileLoading.has(key)) {
-          needsRedraw = true;
-          loadTile(z, tx, ty, style).then((img) => {
-            if (img) scheduleDraw();
-          });
+
+          loadTile(tileZoom, tx, ty, isDark, () => requestRender());
         }
       }
     }
 
-    if (needsRedraw) {
-      ctx.fillStyle = style === 'dark' ? '#1a1a22' : '#ddd8d0';
-      for (let tx = startTx; tx <= endTx; tx++) {
-        for (let ty = startTy; ty <= endTy; ty++) {
-          if (tx < 0 || ty < 0 || tx >= maxTile || ty >= maxTile) continue;
-          const key = `${style}/${z}/${tx}/${ty}`;
-          if (!tileCache.get(key)) {
-            const drawX = Math.round((tx - fracX) * TILE_SIZE + w / 2);
-            const drawY = Math.round((ty - fracY) * TILE_SIZE + h / 2);
-            ctx.fillRect(drawX, drawY, TILE_SIZE, TILE_SIZE);
-          }
-        }
+    // Pre-fetch surrounding 1-ring tiles for instant pan responsiveness
+    prefetchSurroundingTiles(tileZoom, minTileX, maxTileX, minTileY, maxTileY, isDark, () => requestRender());
+
+    // 3. Render Offline Region Vector Roads (if downloaded)
+    const bounds = viewportBounds(vp);
+    for (const regionSummary of props.regions) {
+      if (
+        bounds.north < regionSummary.bbox.south ||
+        bounds.south > regionSummary.bbox.north ||
+        bounds.east < regionSummary.bbox.west ||
+        bounds.west > regionSummary.bbox.east
+      ) {
+        continue;
       }
-    }
-  }
 
-  function drawOfflineData(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number, data: typeof dataRef.current) {
-    const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-    const marginDeg = (Math.max(w, h) * mpp * 1.3) / 111000;
-    const minLat = vp.centerLat - marginDeg;
-    const maxLat = vp.centerLat + marginDeg;
-    const minLng = vp.centerLng - marginDeg;
-    const maxLng = vp.centerLng + marginDeg;
+      const regionData = regionDataManager.getCachedData(regionSummary.id);
+      if (!regionData) {
+        void regionDataManager.requestData(regionSummary.id).then((d) => {
+          if (d) requestRender();
+        });
+        continue;
+      }
 
-    const roads: { coords: [number, number][]; cls: number }[] = [];
-    for (const region of data.regions) {
-      for (const road of region.roads) {
-        if (road.coords.length < 2) continue;
-        let inView = false;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      for (const road of regionData.roads) {
+        if (!road.coords || road.coords.length < 2) continue;
+        const color = ROAD_COLORS[road.roadClass] || (isDark ? '#404040' : '#d0d0d0');
+        const width = ROAD_WIDTHS[road.roadClass] || 1;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width * (vp.zoom >= 15 ? 1.5 : 1);
+        ctx.beginPath();
+
+        let started = false;
         for (const [lng, lat] of road.coords) {
-          if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
-            inView = true;
-            break;
+          const pt = project(lat, lng, vp);
+
+          if (!started) {
+            ctx.moveTo(pt.x, pt.y);
+            started = true;
+          } else {
+            ctx.lineTo(pt.x, pt.y);
           }
         }
-        if (inView) roads.push({ coords: road.coords, cls: road.roadClass });
+        ctx.stroke();
       }
     }
-    roads.sort((a, b) => a.cls - b.cls);
 
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    // 4. Render Active Route Path
+    if (props.route && props.route.coordinates.length >= 2) {
+      const coords = props.route.coordinates;
 
-    for (const road of roads) {
-      ctx.strokeStyle = ROAD_CASING[road.cls] ?? '#b0a898';
-      ctx.lineWidth = (ROAD_WIDTHS[road.cls] ?? 1.5) + 2;
-      ctx.beginPath();
-      for (let i = 0; i < road.coords.length; i++) {
-        const p = project(road.coords[i][1], road.coords[i][0], vp);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.stroke();
-    }
-
-    for (const road of roads) {
-      ctx.strokeStyle = ROAD_COLORS[road.cls] ?? '#d0c8b8';
-      ctx.lineWidth = ROAD_WIDTHS[road.cls] ?? 1.5;
-      ctx.beginPath();
-      for (let i = 0; i < road.coords.length; i++) {
-        const p = project(road.coords[i][1], road.coords[i][0], vp);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.stroke();
-    }
-  }
-
-  function drawMarkers(ctx: CanvasRenderingContext2D, vp: Viewport, w: number, h: number, data: typeof dataRef.current) {
-    // Saved places
-    for (const place of data.savedPlaces) {
-      const p = project(place.latitude, place.longitude, vp);
-      if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) continue;
-      ctx.fillStyle = place.type === 'home' ? '#e63946' : place.type === 'work' ? '#3a86ff' : '#ffbe0b';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // POI category search markers
-    for (const poi of data.poiMarkers) {
-      const p = project(poi.lat, poi.lng, vp);
-      if (p.x < -30 || p.x > w + 30 || p.y < -30 || p.y > h + 30) continue;
-      ctx.fillStyle = POI_COLORS[poi.type] ?? '#3a86ff';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-    }
-
-    // Destination
-    if (data.destination) {
-      const p = project(data.destination.lat, data.destination.lng, vp);
-      drawPin(ctx, p.x, p.y, '#3a86ff');
-    }
-
-    // Home
-    if (data.home) {
-      const p = project(data.home.latitude, data.home.longitude, vp);
-      ctx.fillStyle = '#e63946';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Route line
-    if (data.route && data.route.coordinates.length >= 2) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-      ctx.lineWidth = 8;
+      // Casing
+      ctx.strokeStyle = '#1d4ed8';
+      ctx.lineWidth = 9;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.beginPath();
-      for (let i = 0; i < data.route.coordinates.length; i++) {
-        const c = data.route.coordinates[i];
-        const p = project(c.lat, c.lng, vp);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
+      let started = false;
+      for (const ptCoord of coords) {
+        const pt = project(ptCoord.lat, ptCoord.lng, vp);
+        if (!started) { ctx.moveTo(pt.x, pt.y); started = true; } else { ctx.lineTo(pt.x, pt.y); }
       }
       ctx.stroke();
 
-      ctx.strokeStyle = '#3a86ff';
+      // Inner line
+      ctx.strokeStyle = '#3b82f6';
       ctx.lineWidth = 5;
       ctx.beginPath();
-      for (let i = 0; i < data.route.coordinates.length; i++) {
-        const c = data.route.coordinates[i];
-        const p = project(c.lat, c.lng, vp);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
+      started = false;
+      for (const ptCoord of coords) {
+        const pt = project(ptCoord.lat, ptCoord.lng, vp);
+        if (!started) { ctx.moveTo(pt.x, pt.y); started = true; } else { ctx.lineTo(pt.x, pt.y); }
       }
       ctx.stroke();
     }
 
-    // User position
-    if (data.gpsFix && Number.isFinite(data.gpsFix.latitude) && Number.isFinite(data.gpsFix.longitude)) {
-      const p = project(data.gpsFix.latitude, data.gpsFix.longitude, vp);
-      const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-      const accRadius = Math.max(8, (data.gpsFix.accuracy ?? 50) / mpp);
-      ctx.fillStyle = 'rgba(58,134,255,0.12)';
+    // 5. POI Markers
+    for (const poi of props.poiMarkers) {
+      const pt = project(poi.lat, poi.lng, vp);
+      if (pt.x >= -20 && pt.x <= vp.width + 20 && pt.y >= -20 && pt.y <= vp.height + 20) {
+        const color = POI_COLORS[poi.type] || '#3b82f6';
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        if (vp.zoom >= 14 && poi.label) {
+          ctx.font = '600 11px system-ui, sans-serif';
+          ctx.fillStyle = isDark ? '#ffffff' : '#1f2937';
+          ctx.textAlign = 'center';
+          ctx.fillText(poi.label, pt.x, pt.y - 11);
+        }
+      }
+    }
+
+    // 6. Saved Places (Home, Destination)
+    if (props.home) {
+      const pt = project(props.home.latitude, props.home.longitude, vp);
+      if (pt.x >= -30 && pt.x <= vp.width + 30 && pt.y >= -30 && pt.y <= vp.height + 30) {
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('H', pt.x, pt.y);
+      }
+    }
+
+    if (props.destination) {
+      const pt = project(props.destination.lat, props.destination.lng, vp);
+      ctx.fillStyle = '#10b981';
       ctx.beginPath();
-      ctx.arc(p.x, p.y, accRadius, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = 'rgba(58,134,255,0.35)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = '#3a86ff';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
+
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 3;
       ctx.stroke();
-    }
-  }
 
-  function drawPin(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-    ctx.fillStyle = color;
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('D', pt.x, pt.y);
+    }
+
+    // 7. GPS Location Marker
+    if (props.gpsFix) {
+      const pt = project(props.gpsFix.latitude, props.gpsFix.longitude, vp);
+
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 22, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#2563eb';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 8. Scale Bar
+    const mpp = metersPerPixel(vp.centerLat, vp.zoom);
+    const targetPx = 100;
+    const targetMeters = targetPx * mpp;
+
+    let scaleMeters = 100;
+    if (targetMeters > 500000) scaleMeters = 1000000;
+    else if (targetMeters > 200000) scaleMeters = 500000;
+    else if (targetMeters > 100000) scaleMeters = 200000;
+    else if (targetMeters > 50000) scaleMeters = 100000;
+    else if (targetMeters > 20000) scaleMeters = 50000;
+    else if (targetMeters > 10000) scaleMeters = 20000;
+    else if (targetMeters > 5000) scaleMeters = 10000;
+    else if (targetMeters > 2000) scaleMeters = 5000;
+    else if (targetMeters > 1000) scaleMeters = 2000;
+    else if (targetMeters > 500) scaleMeters = 1000;
+    else if (targetMeters > 200) scaleMeters = 500;
+    else if (targetMeters > 100) scaleMeters = 200;
+    else scaleMeters = 100;
+
+    const scaleWidthPx = scaleMeters / mpp;
+    const scaleText = scaleMeters >= 1000 ? `${scaleMeters / 1000} km` : `${scaleMeters} m`;
+
+    const sbX = 16;
+    const sbY = vp.height - 18;
+
+    ctx.strokeStyle = isDark ? '#ffffff' : '#1f2937';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(x, y - 10, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2.5;
+    ctx.moveTo(sbX, sbY - 4);
+    ctx.lineTo(sbX, sbY);
+    ctx.lineTo(sbX + scaleWidthPx, sbY);
+    ctx.lineTo(sbX + scaleWidthPx, sbY - 4);
     ctx.stroke();
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(x, y - 10, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
 
-  useEffect(() => {
-    if (initializedRef.current) return;
-    const center = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
-    if (center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude)) {
-      vpRef.current.centerLat = center.latitude;
-      vpRef.current.centerLng = center.longitude;
-      initializedRef.current = true;
-      scheduleDraw();
-    }
-  }, [gpsFix, home, scheduleDraw]);
-
-  useEffect(() => {
-    scheduleDraw();
-  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, rotation, mapStyle, scheduleDraw]);
-
-  useEffect(() => {
-    if (recenterSignal > 0 && gpsFix && Number.isFinite(gpsFix.latitude)) {
-      vpRef.current.centerLat = gpsFix.latitude;
-      vpRef.current.centerLng = gpsFix.longitude;
-      userPannedRef.current = false;
-      scheduleDraw();
-    }
-  }, [recenterSignal, gpsFix, scheduleDraw]);
-
-  useEffect(() => {
-    if (gpsFix && followMode && !userPannedRef.current && Number.isFinite(gpsFix.latitude)) {
-      vpRef.current.centerLat = gpsFix.latitude;
-      vpRef.current.centerLng = gpsFix.longitude;
-      scheduleDraw();
-    }
-  }, [gpsFix, followMode, scheduleDraw]);
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.fillStyle = isDark ? '#ffffff' : '#1f2937';
+    ctx.textAlign = 'left';
+    ctx.fillText(scaleText, sbX + scaleWidthPx + 6, sbY);
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ro = new ResizeObserver(() => scheduleDraw());
-    ro.observe(canvas);
-    return () => ro.disconnect();
-  }, [scheduleDraw]);
 
-  useEffect(() => {
-    let active = true;
-    function tick() {
-      if (!active) return;
-      const anim = animRef.current;
-      if (anim) {
-        const elapsed = performance.now() - anim.start;
-        const t = Math.min(1, elapsed / anim.duration);
-        const eased = 1 - Math.pow(1 - t, 3);
-        vpRef.current.zoom = anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased;
-        scheduleDraw();
-        if (t >= 1) animRef.current = null;
-      }
-      requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
-    return () => { active = false; };
-  }, [scheduleDraw]);
+    const updateDimensions = () => {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
 
-  useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.scale(dpr, dpr);
+
+      vpRef.current.width = rect.width;
+      vpRef.current.height = rect.height;
+      requestRender();
     };
-  }, []);
 
-  useEffect(() => {
-    const interval = setInterval(pruneTileCache, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    updateDimensions();
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(canvas);
 
-  const animateZoom = useCallback((target: number, duration = 200) => {
-    animRef.current = {
-      fromZoom: vpRef.current.zoom,
-      toZoom: Math.max(1, Math.min(19, target)),
-      start: performance.now(),
-      duration,
-    };
-  }, []);
+    return () => observer.disconnect();
+  }, [requestRender]);
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.setPointerCapture(e.pointerId);
+
     pointersRef.current.set(e.pointerId, { id: e.pointerId, x: e.clientX, y: e.clientY });
 
     if (pointersRef.current.size === 1) {
       dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
-      if (onLongPress) {
-        longPressTimerRef.current = setTimeout(() => {
-          if (dragRef.current && !dragRef.current.moved) {
-            const rect = canvasRef.current?.getBoundingClientRect();
-            if (rect) {
-              const { lat, lng } = unproject(
-                { x: e.clientX - rect.left, y: e.clientY - rect.top },
-                vpRef.current,
-              );
-              onLongPress(lat, lng);
-            }
-          }
-        }, 500);
-      }
+
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = setTimeout(() => {
+        if (dragRef.current && !dragRef.current.moved) {
+          const rect = canvas.getBoundingClientRect();
+          const clickX = e.clientX - rect.left;
+          const clickY = e.clientY - rect.top;
+
+          const coords = unproject({ x: clickX, y: clickY }, vpRef.current);
+          propsRef.current.onLongPress?.(coords.lat, coords.lng);
+        }
+      }, 500);
     } else if (pointersRef.current.size === 2) {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
       const pts = Array.from(pointersRef.current.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       pinchRef.current = {
-        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        dist,
         zoom: vpRef.current.zoom,
+        anchorX: (pts[0].x + pts[1].x) / 2,
+        anchorY: (pts[0].y + pts[1].y) / 2,
       };
-      dragRef.current = null;
     }
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    const existing = pointersRef.current.get(e.pointerId);
-    if (existing) {
-      existing.x = e.clientX;
-      existing.y = e.clientY;
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const ptr = pointersRef.current.get(e.pointerId);
+    if (!ptr) return;
+
+    const dx = e.clientX - ptr.x;
+    const dy = e.clientY - ptr.y;
+    ptr.x = e.clientX;
+    ptr.y = e.clientY;
+
+    if (dragRef.current) {
+      if (Math.hypot(dx, dy) > 3) {
+        dragRef.current.moved = true;
+        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      }
     }
 
-    if (pointersRef.current.size === 2 && pinchRef.current) {
+    if (pointersRef.current.size === 1 && dragRef.current?.moved) {
+      userPannedRef.current = true;
+      vpRef.current = panViewportByPixels(vpRef.current, dx, dy);
+      requestRender();
+    } else if (pointersRef.current.size === 2 && pinchRef.current) {
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       const scale = dist / pinchRef.current.dist;
-      vpRef.current.zoom = Math.max(1, Math.min(19, pinchRef.current.zoom + Math.log2(scale)));
-      userPannedRef.current = true;
-      animRef.current = null;
-      scheduleDraw();
-      return;
-    }
+      const newZoom = pinchRef.current.zoom + Math.log2(scale);
 
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.x;
-    const dy = e.clientY - dragRef.current.y;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-      dragRef.current.moved = true;
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const anchorPx = {
+          x: pinchRef.current.anchorX - rect.left,
+          y: pinchRef.current.anchorY - rect.top,
+        };
+        vpRef.current = zoomViewportAtPixel(vpRef.current, newZoom, anchorPx);
+        requestRender();
       }
     }
-    dragRef.current.x = e.clientX;
-    dragRef.current.y = e.clientY;
-
-    const vp = vpRef.current;
-    const mpp = metersPerPixel(vp.centerLat, vp.zoom);
-    vp.centerLng -= dx * mpp;
-    vp.centerLat += dy * mpp;
-    vp.centerLat = Math.max(-85, Math.min(85, vp.centerLat));
-    userPannedRef.current = true;
-    animRef.current = null;
-    scheduleDraw();
   };
 
-  const onPointerUp = (e: React.PointerEvent) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+
+    const isTap = dragRef.current && !dragRef.current.moved && pointersRef.current.size === 1;
+
     pointersRef.current.delete(e.pointerId);
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
     if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 0) dragRef.current = null;
 
-    if (pointersRef.current.size === 0) {
-      const wasDrag = dragRef.current?.moved;
-      dragRef.current = null;
-      if (!wasDrag && onTap) {
-        const rect = canvasRef.current?.getBoundingClientRect();
-        if (rect) {
-          const clientX = e.clientX - rect.left;
-          const clientY = e.clientY - rect.top;
-          const { lat, lng } = unproject({ x: clientX, y: clientY }, vpRef.current);
+    if (isTap) {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
 
-          // Check if user clicked a POI marker
-          if (onSelectPin && poiMarkers.length > 0) {
-            let clickedPin: PoiMarker | null = null;
-            let minScreenDist = 20; // 20px hit radius
-            for (const poi of poiMarkers) {
-              const p = project(poi.lat, poi.lng, vpRef.current);
-              const dist = Math.hypot(p.x - clientX, p.y - clientY);
-              if (dist < minScreenDist) {
-                minScreenDist = dist;
-                clickedPin = poi;
-              }
-            }
-            if (clickedPin) {
-              onSelectPin(clickedPin);
-              return;
-            }
-          }
-
-          onTap(lat, lng);
-        }
+        const coords = unproject({ x: clickX, y: clickY }, vpRef.current);
+        propsRef.current.onTap?.(coords.lat, coords.lng);
       }
     }
   };
 
-  const onWheel = (e: React.WheelEvent) => {
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    animateZoom(vpRef.current.zoom + (e.deltaY > 0 ? -0.5 : 0.5), 150);
-  };
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  const onDoubleClick = () => {
-    animateZoom(vpRef.current.zoom + 1, 250);
+    const rect = canvas.getBoundingClientRect();
+    const anchorPx = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const zoomDelta = e.deltaY < 0 ? 0.35 : -0.35;
+    vpRef.current = zoomViewportAtPixel(vpRef.current, vpRef.current.zoom + zoomDelta, anchorPx);
+    requestRender();
   };
 
   return (
-    <div className="relative h-full w-full overflow-hidden">
-      <canvas
-        ref={canvasRef}
-        className="h-full w-full touch-none select-none cursor-grab active:cursor-grabbing"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onWheel={onWheel}
-        onDoubleClick={onDoubleClick}
-      />
-      <div className="pointer-events-none absolute bottom-1 right-2 text-[10px] text-black/60 bg-white/80 px-1.5 py-0.5 rounded shadow-sm">
-        © OpenStreetMap & Contributors, ESRI, CartoDB
-      </div>
-    </div>
+    <canvas
+      ref={canvasRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onWheel={handleWheel}
+      className="h-full w-full touch-none select-none"
+      data-testid="canvas-map"
+    />
   );
 }

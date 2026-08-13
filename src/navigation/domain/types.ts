@@ -52,12 +52,32 @@ export interface TurnInstruction {
   lanes?: string;
 }
 
+export type RouteSource = 'offline' | 'online';
+
+export type RouteFailureReason =
+  | 'no-region'
+  | 'outside-coverage'
+  | 'nearest-road-not-found'
+  | 'no-road-path'
+  | 'corrupt-region'
+  | 'cancelled'
+  | 'invalid-coordinates'
+  | 'worker-error';
+
+export interface RouteError {
+  reason: RouteFailureReason;
+  message: string;
+  details?: string;
+}
+
 export interface RouteResult {
   coordinates: { lat: number; lng: number }[];
   distanceMeters: number;
   durationSeconds: number;
   instructions: TurnInstruction[];
   mode: TravelMode;
+  /** Route source: online or offline */
+  source?: RouteSource;
   /** Route type: fastest or shortest. */
   routeType?: 'fastest' | 'shortest';
   /** When the route only covers part of the journey. */
@@ -77,7 +97,16 @@ export interface PartialRouteInfo {
 
 export type RegionPresetKm = 5 | 10 | 20 | 30;
 
-export interface OfflineRegion {
+export interface Bbox {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+export type RegionStatus = 'ready' | 'downloading' | 'paused' | 'error' | 'corrupt';
+
+export interface OfflineRegionSummary {
   id: string;
   label: string;
   centerLat: number;
@@ -85,8 +114,17 @@ export interface OfflineRegion {
   radiusKm: number;
   createdAt: number;
   updatedAt: number;
-  /** Bounding box for quick coverage checks. */
-  bbox: { south: number; west: number; north: number; east: number };
+  bbox: Bbox;
+  sizeBytes: number;
+  version: number;
+  roadCount: number;
+  poiCount: number;
+  status: RegionStatus;
+  auto?: boolean;
+}
+
+export interface OfflineRegionData {
+  regionId: string;
   /** Road graph nodes (id → [lat, lng]). */
   nodes: Record<number, [number, number]>;
   /** Edges: [fromId, toId, roadClass, name?]. */
@@ -95,16 +133,23 @@ export interface OfflineRegion {
   roads: GeoJsonRoad[];
   /** Points of interest. */
   pois: Poi[];
-  /** Size in bytes (approx). */
-  sizeBytes: number;
-  /** Version for incremental updates. */
+  checksum?: string;
   version: number;
+}
+
+/** Composite legacy type for single-record compatibility */
+export interface OfflineRegion extends OfflineRegionSummary {
+  nodes: Record<number, [number, number]>;
+  edges: [number, number, number, string?][];
+  roads: GeoJsonRoad[];
+  pois: Poi[];
 }
 
 export interface GeoJsonRoad {
   coords: [number, number][]; // [lng, lat] pairs
   roadClass: number;
   name?: string;
+  bbox?: Bbox;
 }
 
 export interface Poi {
@@ -123,6 +168,7 @@ export type NavPhase =
   | 'navigating'
   | 'recalculating'
   | 'off-coverage'
+  | 'route-unavailable'
   | 'arrived';
 
 export type BearingCardinal =
@@ -142,7 +188,7 @@ export interface SavedPlace {
 
 /** Download progress info for the download manager. */
 export interface DownloadProgress {
-  phase: 'idle' | 'downloading' | 'parsing' | 'saving' | 'done' | 'error' | 'paused';
+  phase: 'idle' | 'downloading' | 'parsing' | 'graph-building' | 'validating' | 'saving' | 'done' | 'error' | 'paused';
   message: string;
   bytesReceived: number;
   totalBytes: number | null;
@@ -158,3 +204,29 @@ export interface RoutingPreferences {
   avoidHighways: boolean;
   routeType: 'fastest' | 'shortest';
 }
+
+export interface SearchResult {
+  place_id: number;
+  lat: string;
+  lon: string;
+  display_name: string;
+  name?: string;
+  type?: string;
+  category?: string;
+  address?: {
+    road?: string;
+    neighbourhood?: string;
+    suburb?: string;
+    city_district?: string;
+    city?: string;
+    town?: string;
+    village?: string;
+    county?: string;
+    state?: string;
+    postcode?: string;
+    country?: string;
+  };
+  _distanceMeters?: number;
+  _score?: number;
+}
+

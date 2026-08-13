@@ -1,40 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   X,
   Navigation,
   MapPin,
-  WifiOff,
-  Wifi,
   LocateFixed,
   Square,
-  AlertTriangle,
   Home,
   Footprints,
   Car,
   Bike,
   Layers,
   Compass,
-  RefreshCw,
-  Loader2,
-  Info,
   Search,
-  ArrowUpDown,
-  Clock,
-  Star,
-  Briefcase,
-  History,
-  Plus,
-  Gauge,
-  ChevronRight,
-  Settings2,
   Volume2,
   VolumeX,
-  Share2,
-  Bookmark,
-  ExternalLink,
-  PlusCircle,
-  Minus,
-  Eye,
   Coffee,
   Utensils,
   Fuel,
@@ -43,18 +22,20 @@ import {
   Building,
   TreePine,
   ShoppingCart,
+  ShieldAlert,
+  Star,
+  Plus,
+  ArrowLeft,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
 import { CanvasMap, type MapStyle } from '@/navigation/maps/CanvasMap';
 import { CompassFallback } from '@/navigation/ui/CompassFallback';
-import { EmergencyFallback } from '@/navigation/ui/EmergencyFallback';
 import { OfflineMapsPanel } from '@/navigation/ui/OfflineMapsPanel';
 import { HomeSetup } from '@/navigation/ui/HomeSetup';
 import { RouteSearchPanel } from '@/navigation/ui/RouteSearchPanel';
-import { Tulip } from '@/ui/components/Tulip';
 import { formatDistance, formatDuration } from '@/navigation/gps/gps';
 import { searchPlaces } from '@/navigation/search/placeSearch';
-import type { TravelMode, InstructionType, SavedPlace } from '@/navigation/domain/types';
+import type { TravelMode } from '@/navigation/domain/types';
 
 interface PoiItem {
   lat: number;
@@ -69,7 +50,6 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const [showCompass, setShowCompass] = useState(false);
   const [showHomeSetup, setShowHomeSetup] = useState(false);
   const [showRouteSearch, setShowRouteSearch] = useState<'from' | 'to' | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const [mapStyle, setMapStyle] = useState<MapStyle>('standard');
   const [showLayerPicker, setShowLayerPicker] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -88,12 +68,9 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const [poiMarkers, setPoiMarkers] = useState<PoiItem[]>([]);
   const [loadingPoi, setLoadingPoi] = useState(false);
 
-  // Street view mock modal
-  const [showStreetView, setShowStreetView] = useState(false);
-
   const needsSetup = !nav.home;
   const hasRoute = nav.route !== null;
-  const isOffCoverage = nav.phase === 'off-coverage';
+  const isRouteUnavailable = nav.phase === 'route-unavailable';
   const isNavigating = nav.phase === 'navigating' || nav.phase === 'recalculating';
 
   useEffect(() => {
@@ -103,7 +80,7 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Voice guidance announcement when instruction changes
+  // Voice guidance announcement
   const lastSpokenIndexRef = useRef<number>(-1);
   useEffect(() => {
     if (!voiceEnabled || !nav.route || nav.route.instructions.length === 0) return;
@@ -127,6 +104,9 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
       setPoiMarkers([]);
       return;
     }
+    if (nav.network === 'offline') {
+      return;
+    }
     setActivePoiCategory(categoryKey);
     setLoadingPoi(true);
     const refLat = nav.gpsFix?.latitude ?? nav.home?.latitude ?? 28.6139;
@@ -148,735 +128,472 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
     }
   };
 
-  // Reverse geocode tap on map
-  const handleMapTap = async (lat: number, lng: number) => {
+  const handleMapTap = (lat: number, lng: number) => {
     setSelectedPin({
       lat,
       lng,
-      label: 'Dropped Pin',
+      label: 'Selected Location',
       type: 'landmark',
       address: `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`,
     });
+  };
 
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.display_name) {
-          const shortName = data.name || data.display_name.split(',')[0] || 'Dropped Pin';
-          setSelectedPin({
-            lat,
-            lng,
-            label: shortName,
-            type: 'landmark',
-            address: data.display_name,
-          });
-        }
-      }
-    } catch {
-      // Keep coordinate fallback
-    }
+  const setPinAsHome = () => {
+    if (!selectedPin) return;
+    nav.setHomeLocation({
+      label: selectedPin.label || 'Home',
+      latitude: selectedPin.lat,
+      longitude: selectedPin.lng,
+    });
+    setSelectedPin(null);
+  };
+
+  const savePinToFavorites = () => {
+    if (!selectedPin) return;
+    nav.addSavedPlace({
+      label: selectedPin.label,
+      latitude: selectedPin.lat,
+      longitude: selectedPin.lng,
+      type: 'favorite',
+    });
+    setSelectedPin(null);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-surface animate-fade-in">
+    <div className="fixed inset-0 z-50 flex flex-col bg-surface animate-fade-in" data-testid="navigation-screen">
       {/* Top bar */}
-      <header className="flex items-center justify-between border-b border-line bg-surface-raised px-4 py-3 safe-top">
+      <header className="flex items-center justify-between border-b border-line bg-surface-raised px-4 py-3 safe-top shadow-sm">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink" data-testid="close-nav-btn">
-            <X size={22} />
+          <button
+            onClick={onClose}
+            className="flex items-center gap-1.5 rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+            title="Go back"
+            data-testid="close-nav-btn"
+          >
+            <ArrowLeft size={22} />
           </button>
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-200 text-accent-700">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-500 text-white shadow-md">
               <Navigation size={16} fill="currentColor" />
             </div>
             <div>
-              <h1 className="text-base font-semibold leading-tight text-ink">Google Maps Pro</h1>
+              <h1 className="text-base font-semibold leading-tight text-ink">Aanyaa Navigation</h1>
               <p className="text-[11px] leading-tight text-ink-faint">{statusLabel(nav)}</p>
             </div>
           </div>
         </div>
+
         <div className="flex items-center gap-2">
+          {/* Home Setup / Quick Home button */}
+          <button
+            onClick={() => {
+              if (nav.home) {
+                nav.setDestination({ lat: nav.home.latitude, lng: nav.home.longitude, label: nav.home.label });
+              } else {
+                setShowHomeSetup(true);
+              }
+            }}
+            data-testid="header-home-btn"
+            className="flex items-center gap-1.5 rounded-full border border-line bg-surface-subtle px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-line-strong"
+          >
+            <Home size={14} className={nav.home ? 'text-accent-500' : 'text-ink-faint'} />
+            <span className="max-w-[80px] truncate">{nav.home ? nav.home.label : 'Set Home'}</span>
+          </button>
+
+          {/* Route Source Badge */}
+          {hasRoute && nav.route?.source && (
+            <span
+              data-testid="route-source-badge"
+              className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                nav.route.source === 'offline'
+                  ? 'bg-accent-100 text-accent-700 border border-accent-300'
+                  : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+              }`}
+            >
+              {nav.route.source === 'offline' ? 'Offline Road Route' : 'Online Route'}
+            </span>
+          )}
+
           {/* Voice Guidance Toggle */}
           <button
             onClick={() => setVoiceEnabled(!voiceEnabled)}
-            className={`flex h-8 w-8 items-center justify-center rounded-full border ${voiceEnabled ? 'border-accent-300 bg-accent-50 text-accent-600' : 'border-line text-ink-muted'}`}
-            title={voiceEnabled ? 'Voice Guidance On' : 'Voice Guidance Muted'}
+            className={`rounded-full p-2 transition-colors ${voiceEnabled ? 'bg-accent-100 text-accent-600' : 'bg-surface-subtle text-ink-muted'}`}
+            title={voiceEnabled ? 'Mute voice guidance' : 'Enable voice guidance'}
             data-testid="voice-toggle-btn"
           >
-            {voiceEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+            {voiceEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
           </button>
 
-          <StatusBadge
-            icon={nav.network === 'online' ? <Wifi size={12} /> : <WifiOff size={12} />}
-            label={nav.network === 'online' ? 'LIVE' : 'OFFLINE'}
-            tone={nav.network === 'online' ? 'success' : 'warning'}
-          />
-          <StatusBadge
-            icon={<MapPin size={12} />}
-            label={gpsLabel(nav.gpsStatus)}
-            tone={nav.gpsStatus === 'found' ? 'success' : nav.gpsStatus === 'weak' || nav.gpsStatus === 'stale' ? 'warning' : 'error'}
-          />
+          {/* Offline Maps Button */}
+          <button
+            onClick={() => setShowOfflineMaps(true)}
+            data-testid="offline-maps-btn"
+            className="flex items-center gap-1.5 rounded-full border border-line bg-surface-subtle px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-line-strong"
+          >
+            <MapPin size={14} className="text-accent-500" />
+            <span>{nav.regions.length} Maps</span>
+          </button>
         </div>
       </header>
 
-      {needsSetup ? (
-        <NeedsSetup onSetup={() => setShowHomeSetup(true)} gpsStatus={nav.gpsStatus} />
-      ) : isOffCoverage && !hasRoute ? (
-        <div className="flex flex-1 flex-col overflow-y-auto">
-          <div className="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-5 py-3 text-sm text-warning">
-            <AlertTriangle size={16} className="shrink-0" />
-            <span>{nav.routeError ?? 'Outside offline coverage. Showing fallback navigation.'}</span>
-          </div>
-          {showCompass ? <CompassFallback /> : <EmergencyFallback onSetupHome={() => setShowHomeSetup(true)} />}
-          <div className="flex justify-center gap-3 p-4">
+      {/* Main map canvas area */}
+      <div className="relative flex-1 bg-surface-subtle">
+        <CanvasMap
+          regions={nav.regions}
+          route={nav.route}
+          gpsFix={nav.gpsFix}
+          home={nav.home}
+          destination={nav.destination}
+          savedPlaces={nav.savedPlaces}
+          poiMarkers={poiMarkers}
+          recenterSignal={nav.recenterSignal}
+          followMode={nav.followMode}
+          rotation={0}
+          mapStyle={mapStyle}
+          onTap={handleMapTap}
+          onLongPress={(lat, lng) => handleMapTap(lat, lng)}
+          onSelectPin={(pin) => setSelectedPin({ ...pin, address: `${pin.lat.toFixed(4)}°, ${pin.lng.toFixed(4)}°` })}
+        />
+
+        {/* POI Category Chips Bar */}
+        <div className="absolute top-3 left-3 right-3 z-10 flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+          {[
+            { key: 'gas', label: 'Gas', icon: Fuel, query: 'petrol pump' },
+            { key: 'food', label: 'Food', icon: Utensils, query: 'restaurant' },
+            { key: 'cafe', label: 'Cafe', icon: Coffee, query: 'cafe' },
+            { key: 'hospital', label: 'Hospital', icon: HeartPulse, query: 'hospital' },
+            { key: 'hotel', label: 'Hotel', icon: Bed, query: 'hotel' },
+            { key: 'supermarket', label: 'Groceries', icon: ShoppingCart, query: 'supermarket' },
+            { key: 'bank', label: 'ATM', icon: Building, query: 'atm' },
+            { key: 'park', label: 'Park', icon: TreePine, query: 'park' },
+          ].map((cat) => {
+            const Icon = cat.icon;
+            const isActive = activePoiCategory === cat.key;
+            return (
+              <button
+                key={cat.key}
+                disabled={nav.network === 'offline'}
+                onClick={() => handlePoiCategoryClick(cat.key, cat.query)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold shadow-md transition-all active:scale-95 ${
+                  isActive
+                    ? 'bg-accent-500 text-white'
+                    : 'bg-surface/90 text-ink border border-line backdrop-blur-md hover:bg-surface'
+                } ${nav.network === 'offline' ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <Icon size={14} />
+                {cat.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Floating action buttons stack right */}
+        <div className="absolute top-16 right-3 z-10 flex flex-col gap-2.5">
+          {/* Map style layer picker */}
+          <div className="relative">
             <button
-              onClick={() => setShowCompass(!showCompass)}
-              className="flex items-center gap-2 rounded-full border border-line px-5 py-2.5 text-sm text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              onClick={() => setShowLayerPicker(!showLayerPicker)}
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-line bg-surface/90 text-ink shadow-lg backdrop-blur-md transition-all hover:bg-surface active:scale-95"
+              title="Map layers"
             >
-              <Compass size={16} /> {showCompass ? 'Show coordinates' : 'Show compass'}
+              <Layers size={20} />
+            </button>
+
+            {showLayerPicker && (
+              <div className="absolute right-14 top-0 z-20 flex flex-col gap-1 rounded-2xl border border-line bg-surface/95 p-2 shadow-float backdrop-blur-md">
+                {[
+                  { key: 'standard', label: 'Standard Map' },
+                  { key: 'dark', label: 'Dark Mode Map' },
+                ].map((st) => (
+                  <button
+                    key={st.key}
+                    onClick={() => {
+                      setMapStyle(st.key as MapStyle);
+                      setShowLayerPicker(false);
+                    }}
+                    className={`rounded-xl px-3 py-2 text-left text-xs font-medium transition-colors ${
+                      mapStyle === st.key ? 'bg-accent-100 text-accent-700 font-semibold' : 'text-ink hover:bg-surface-subtle'
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Compass view button */}
+          <button
+            onClick={() => setShowCompass(!showCompass)}
+            className={`flex h-11 w-11 items-center justify-center rounded-full border border-line shadow-lg backdrop-blur-md transition-all active:scale-95 ${
+              showCompass ? 'bg-accent-500 text-white' : 'bg-surface/90 text-ink hover:bg-surface'
+            }`}
+            title="Compass bearing view"
+          >
+            <Compass size={20} />
+          </button>
+
+          {/* Recenter button */}
+          <button
+            onClick={() => nav.recenter()}
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-line bg-surface/90 text-ink shadow-lg backdrop-blur-md transition-all hover:bg-surface active:scale-95"
+            title="Recenter map"
+            data-testid="recenter-btn"
+          >
+            <LocateFixed size={20} className={nav.followMode ? 'text-accent-500' : 'text-ink-muted'} />
+          </button>
+        </div>
+
+        {/* Selected Pin / POI Card popup */}
+        {selectedPin && (
+          <div className="absolute bottom-4 left-4 right-4 z-20 rounded-3xl border border-line bg-surface/95 p-4 shadow-float backdrop-blur-md animate-slide-up" data-testid="selected-pin-card">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-ink">{selectedPin.label}</h3>
+                {selectedPin.address && <p className="mt-0.5 text-xs text-ink-faint">{selectedPin.address}</p>}
+              </div>
+              <button onClick={() => setSelectedPin(null)} className="rounded-full p-1 text-ink-muted hover:bg-surface-subtle">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                onClick={() => {
+                  nav.startNavigation({
+                    lat: selectedPin.lat,
+                    lng: selectedPin.lng,
+                    label: selectedPin.label,
+                  });
+                  setSelectedPin(null);
+                }}
+                data-testid="navigate-to-pin-btn"
+                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 px-4 py-2.5 text-xs font-semibold text-white transition-all hover:bg-accent-600 active:scale-95"
+              >
+                <Navigation size={14} /> Navigate Here
+              </button>
+
+              <button
+                onClick={setPinAsHome}
+                data-testid="set-pin-home-btn"
+                className="flex items-center justify-center gap-1.5 rounded-full border border-line bg-surface-subtle px-3.5 py-2.5 text-xs font-medium text-ink transition-colors hover:bg-surface"
+              >
+                <Home size={14} className="text-accent-500" /> Set as Home
+              </button>
+
+              <button
+                onClick={savePinToFavorites}
+                data-testid="save-pin-fav-btn"
+                className="flex items-center justify-center gap-1.5 rounded-full border border-line bg-surface-subtle px-3.5 py-2.5 text-xs font-medium text-ink transition-colors hover:bg-surface"
+              >
+                <Star size={14} className="text-warning" /> Favorite
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Compass View Overlay */}
+      {showCompass && (
+        <div className="absolute inset-0 z-30 bg-surface">
+          <CompassFallback onClose={() => setShowCompass(false)} />
+        </div>
+      )}
+
+      {/* Route Error Panel (when road routing fails) */}
+      {isRouteUnavailable && nav.routeError && (
+        <div className="border-t border-warning/40 bg-warning/5 p-4 safe-bottom shadow-lg" data-testid="route-unavailable-panel">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warning/20 text-warning-700">
+              <ShieldAlert size={20} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-ink">Route Unavailable</h3>
+              <p className="mt-0.5 text-xs text-ink">{nav.routeError.message}</p>
+              {nav.routeError.details && (
+                <p className="mt-1 text-[11px] text-ink-faint">{nav.routeError.details}</p>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={() => setShowOfflineMaps(true)}
+              className="flex-1 rounded-full bg-accent-500 text-white font-medium px-4 py-2.5 text-xs shadow-md transition-all hover:bg-accent-600 active:scale-95"
+            >
+              Download Offline Map
+            </button>
+            {nav.destination && (
+              <button
+                onClick={() => {
+                  nav.setDestination(nav.destination);
+                }}
+                className="rounded-full bg-surface-raised border border-line px-4 py-2.5 text-xs font-medium text-ink hover:bg-surface-subtle"
+              >
+                Retry
+              </button>
+            )}
+            <button
+              onClick={() => nav.stopNavigation()}
+              className="rounded-full border border-line px-3 py-2.5 text-xs text-ink-muted hover:bg-surface-subtle"
+            >
+              Clear
             </button>
           </div>
         </div>
-      ) : (
-        <>
-          {/* Map view container */}
-          <div className="relative flex-1 overflow-hidden bg-black">
-            <CanvasMap
-              regions={nav.regions}
-              route={nav.route}
-              gpsFix={nav.snappedFix ?? nav.gpsFix}
-              home={nav.home}
-              destination={nav.destination}
-              savedPlaces={nav.savedPlaces}
-              poiMarkers={poiMarkers}
-              recenterSignal={nav.recenterSignal}
-              followMode={nav.followMode}
-              rotation={0}
-              mapStyle={mapStyle}
-              onTap={handleMapTap}
-              onLongPress={handleMapTap}
-              onSelectPin={(pin) => {
-                setSelectedPin({
-                  lat: pin.lat,
-                  lng: pin.lng,
-                  label: pin.label,
-                  type: pin.type,
-                  address: `${pin.lat.toFixed(4)}°, ${pin.lng.toFixed(4)}°`,
-                });
-              }}
-            />
+      )}
 
-            {/* POI Category Quick Filter Bar */}
-            <div className="absolute top-3 left-3 right-16 z-10 flex items-center gap-1.5 overflow-x-auto py-1 no-scrollbar">
-              {[
-                { key: 'gas', label: 'Gas', query: 'gas station', icon: <Fuel size={13} /> },
-                { key: 'food', label: 'Restaurants', query: 'restaurant', icon: <Utensils size={13} /> },
-                { key: 'cafe', label: 'Coffee', query: 'cafe coffee', icon: <Coffee size={13} /> },
-                { key: 'hotel', label: 'Hotels', query: 'hotel motel', icon: <Bed size={13} /> },
-                { key: 'hospital', label: 'Hospitals', query: 'hospital clinic', icon: <HeartPulse size={13} /> },
-                { key: 'atm', label: 'ATMs', query: 'atm bank', icon: <Building size={13} /> },
-                { key: 'supermarket', label: 'Groceries', query: 'supermarket grocery', icon: <ShoppingCart size={13} /> },
-                { key: 'park', label: 'Parks', query: 'park garden', icon: <TreePine size={13} /> },
-              ].map((cat) => (
-                <button
-                  key={cat.key}
-                  onClick={() => handlePoiCategoryClick(cat.key, cat.query)}
-                  className={`flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium shadow-md backdrop-blur-md transition-all ${
-                    activePoiCategory === cat.key
-                      ? 'bg-accent-300 text-white font-bold scale-105'
-                      : 'bg-white/90 text-ink hover:bg-white'
-                  }`}
-                  data-testid={`poi-chip-${cat.key}`}
-                >
-                  {cat.icon}
-                  {cat.label}
-                </button>
-              ))}
-              {loadingPoi && (
-                <div className="flex items-center bg-white/90 rounded-full px-3 py-1 shadow-md">
-                  <Loader2 size={13} className="animate-spin text-accent-500" />
-                </div>
-              )}
-            </div>
-
-            {/* Floating controls on right */}
-            <div className="absolute right-3 top-16 z-10 flex flex-col gap-2">
-              <button
-                onClick={nav.recenter}
-                className={`flex h-10 w-10 items-center justify-center rounded-full shadow-float transition-all active:scale-95 ${
-                  nav.followMode ? 'bg-accent-300 text-white' : 'bg-surface-raised text-ink hover:bg-surface-subtle'
-                }`}
-                aria-label="Recenter"
-                data-testid="recenter-btn"
-              >
-                <LocateFixed size={18} />
-              </button>
-
-              {/* Layer Switcher Toggle */}
-              <div className="relative">
-                <button
-                  onClick={() => setShowLayerPicker(!showLayerPicker)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-raised text-ink shadow-float transition-all hover:bg-surface-subtle active:scale-95"
-                  aria-label="Map layers"
-                  data-testid="layer-switcher-btn"
-                >
-                  <Layers size={18} />
-                </button>
-
-                {/* Layer Picker Dropdown */}
-                {showLayerPicker && (
-                  <div className="absolute right-12 top-0 z-20 w-44 rounded-2xl border border-line bg-surface-raised p-2 shadow-float animate-slide-in">
-                    <p className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-faint">Map Type</p>
-                    {[
-                      { key: 'standard', label: 'Standard OSM' },
-                      { key: 'satellite', label: 'Satellite Imagery' },
-                      { key: 'terrain', label: 'Terrain Topo' },
-                      { key: 'dark', label: 'Dark Mode' },
-                      { key: 'transit', label: 'Transit & Streets' },
-                    ].map((style) => (
-                      <button
-                        key={style.key}
-                        onClick={() => {
-                          setMapStyle(style.key as MapStyle);
-                          setShowLayerPicker(false);
-                        }}
-                        className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-xs font-medium transition-colors ${
-                          mapStyle === style.key
-                            ? 'bg-accent-100 text-accent-700 font-bold'
-                            : 'text-ink hover:bg-surface-subtle'
-                        }`}
-                      >
-                        {style.label}
-                        {mapStyle === style.key && <Check size={12} />}
-                      </button>
-                    ))}
+      {/* Bottom Panel / Navigation Dashboard */}
+      {!isRouteUnavailable && (
+        <div className="border-t border-line bg-surface-raised p-4 safe-bottom shadow-lg">
+          {isNavigating && nav.route ? (
+            <div className="space-y-3" data-testid="active-nav-dashboard">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-display text-2xl font-bold text-ink">
+                      {formatDistance(nav.remainingDistance)}
+                    </span>
+                    <span className="text-sm font-medium text-ink-muted">
+                      · {formatDuration(nav.remainingDuration)}
+                    </span>
                   </div>
-                )}
-              </div>
+                  {nav.route.instructions[nav.nextInstructionIndex] && (
+                    <p className="mt-1 text-xs font-medium text-accent-600">
+                      Next: {nav.route.instructions[nav.nextInstructionIndex].roadName || 'Ahead'}
+                    </p>
+                  )}
+                </div>
 
-              <button
-                onClick={() => setShowOfflineMaps(true)}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-raised text-ink shadow-float transition-all hover:bg-surface-subtle active:scale-95"
-                aria-label="Offline maps"
-                data-testid="offline-maps-btn"
-              >
-                <Compass size={18} />
-              </button>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-raised text-ink shadow-float transition-all hover:bg-surface-subtle active:scale-95"
-                aria-label="Route settings"
-                data-testid="settings-btn"
-              >
-                <Settings2 size={18} />
-              </button>
+                <button
+                  onClick={() => nav.stopNavigation()}
+                  data-testid="stop-nav-btn"
+                  className="flex h-11 w-11 items-center justify-center rounded-full bg-error/10 text-error transition-colors hover:bg-error/20"
+                  title="Stop navigation"
+                >
+                  <Square size={18} fill="currentColor" />
+                </button>
+              </div>
             </div>
-
-            {/* Recalculating overlay */}
-            {nav.phase === 'recalculating' && (
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 rounded-2xl bg-surface-raised px-6 py-4 shadow-float">
-                <div className="flex items-center gap-2 text-sm font-medium text-accent-600">
-                  <RefreshCw size={16} className="animate-spin" />
-                  RECALCULATING ROUTE…
-                </div>
-              </div>
-            )}
-
-            {/* Speed indicator */}
-            {isNavigating && nav.currentSpeed >= 0 && (
-              <div className="absolute left-3 bottom-20 z-10 rounded-2xl bg-surface-raised/95 px-3.5 py-2 shadow-float backdrop-blur-sm border border-line">
-                <div className="flex items-center gap-2">
-                  <Gauge size={16} className="text-accent-500" />
-                  <div>
-                    <p className="text-lg font-bold text-ink leading-none">{Math.round(nav.currentSpeed)}</p>
-                    <p className="text-[10px] text-ink-faint uppercase font-medium">km/h</p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Location Info Card Bottom Sheet (Google Maps Style) */}
-          {selectedPin && (
-            <div className="absolute bottom-0 left-0 right-0 z-30 rounded-t-3xl border-t border-line bg-surface-raised p-5 shadow-float animate-slide-in">
+          ) : nav.destination || nav.route ? (
+            /* Route Preview Card */
+            <div className="space-y-3.5" data-testid="route-preview-card">
               <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent-100 text-accent-600">
-                    <MapPin size={22} />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <MapPin size={16} className="text-accent-500" />
+                    <h3 className="text-base font-semibold text-ink">{nav.destination?.label || 'Selected Destination'}</h3>
                   </div>
-                  <div>
-                    <h3 className="text-base font-bold text-ink">{selectedPin.label}</h3>
-                    <p className="mt-0.5 text-xs text-ink-faint line-clamp-2">{selectedPin.address || 'Selected Location'}</p>
-                    <div className="mt-2 flex items-center gap-3 text-xs font-semibold text-accent-600">
-                      <span>{selectedPin.lat.toFixed(4)}°, {selectedPin.lng.toFixed(4)}°</span>
-                    </div>
-                  </div>
+                  {nav.route ? (
+                    <p className="mt-0.5 text-xs font-medium text-ink-muted">
+                      {formatDistance(nav.route.distanceMeters)} · {formatDuration(nav.route.durationSeconds)} ({nav.travelMode})
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-xs text-accent-600 animate-pulse">Calculating road route…</p>
+                  )}
                 </div>
-                <button
-                  onClick={() => setSelectedPin(null)}
-                  className="rounded-full p-1.5 text-ink-muted hover:bg-surface-subtle hover:text-ink"
-                  data-testid="close-pin-card"
-                >
-                  <X size={18} />
-                </button>
+
+                <div className="flex gap-1 bg-surface-subtle p-1 rounded-full border border-line">
+                  {(['drive', 'bike', 'walk'] as TravelMode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => nav.setTravelMode(m)}
+                      className={`flex items-center justify-center h-8 w-8 rounded-full transition-colors ${
+                        nav.travelMode === m ? 'bg-accent-500 text-white shadow-sm' : 'text-ink-muted hover:text-ink'
+                      }`}
+                      title={m}
+                    >
+                      {m === 'drive' && <Car size={14} />}
+                      {m === 'bike' && <Bike size={14} />}
+                      {m === 'walk' && <Footprints size={14} />}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Action buttons */}
-              <div className="mt-4 grid grid-cols-4 gap-2 border-t border-line pt-4">
+              <div className="flex gap-2">
                 <button
-                  onClick={() => {
-                    const dest = { lat: selectedPin.lat, lng: selectedPin.lng, label: selectedPin.label };
-                    nav.setDestination(dest);
-                    void nav.startNavigation(dest);
-                    setSelectedPin(null);
-                  }}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-accent-300 py-2.5 text-xs font-semibold text-white transition-all hover:bg-accent-400 active:scale-95"
-                  data-testid="pin-directions-btn"
+                  onClick={() => nav.startNavigation()}
+                  data-testid="start-navigation-btn"
+                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-600 active:scale-95 shadow-md"
                 >
-                  <Navigation size={16} />
-                  Directions
+                  <Navigation size={16} fill="currentColor" />
+                  Start Navigation
                 </button>
+
                 <button
-                  onClick={() => {
-                    nav.addSavedPlace({
-                      label: selectedPin.label,
-                      latitude: selectedPin.lat,
-                      longitude: selectedPin.lng,
-                      type: 'favorite',
-                    });
-                    alert(`Saved "${selectedPin.label}" to Favorites!`);
-                    setSelectedPin(null);
-                  }}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl border border-line bg-surface py-2.5 text-xs font-semibold text-ink transition-all hover:bg-surface-subtle active:scale-95"
-                  data-testid="pin-save-btn"
+                  onClick={() => nav.setDestination(null)}
+                  data-testid="clear-destination-btn"
+                  className="flex items-center justify-center gap-1.5 rounded-full border border-line bg-surface-subtle px-4 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-surface"
                 >
-                  <Bookmark size={16} className="text-warning" />
-                  Save
-                </button>
-                <button
-                  onClick={() => {
-                    setShowStreetView(true);
-                  }}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl border border-line bg-surface py-2.5 text-xs font-semibold text-ink transition-all hover:bg-surface-subtle active:scale-95"
-                  data-testid="pin-streetview-btn"
-                >
-                  <Eye size={16} className="text-accent-500" />
-                  Street View
-                </button>
-                <button
-                  onClick={() => {
-                    const url = `https://www.google.com/maps/search/?api=1&query=${selectedPin.lat},${selectedPin.lng}`;
-                    navigator.clipboard.writeText(url);
-                    alert('Location link copied to clipboard!');
-                  }}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl border border-line bg-surface py-2.5 text-xs font-semibold text-ink transition-all hover:bg-surface-subtle active:scale-95"
-                  data-testid="pin-share-btn"
-                >
-                  <Share2 size={16} className="text-ink-muted" />
-                  Share
+                  Clear
                 </button>
               </div>
             </div>
-          )}
+          ) : (
+            /* Home / Search Start State */
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wider text-ink-faint">Mode</span>
+                <div className="flex gap-1">
+                  {(['drive', 'bike', 'walk'] as TravelMode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => nav.setTravelMode(m)}
+                      className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        nav.travelMode === m ? 'bg-accent-500 text-white' : 'bg-surface-subtle text-ink-muted hover:text-ink'
+                      }`}
+                    >
+                      {m === 'drive' && <Car size={14} />}
+                      {m === 'bike' && <Bike size={14} />}
+                      {m === 'walk' && <Footprints size={14} />}
+                      <span className="capitalize">{m}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          {/* From/To selection bar (when not navigating) */}
-          {!isNavigating && !hasRoute && !selectedPin && (
-            <div className="border-t border-line bg-surface-raised px-4 py-3">
-              <div className="flex items-center gap-2">
+              <div className="flex gap-2">
                 <button
-                  onClick={() => setShowRouteSearch('from')}
-                  className="flex flex-1 items-center gap-2 rounded-2xl border border-line bg-surface px-3 py-2.5 text-left text-sm transition-colors hover:border-accent-300"
-                  data-testid="search-from-btn"
+                  onClick={() => {
+                    if (needsSetup) {
+                      setShowHomeSetup(true);
+                    } else {
+                      void nav.startNavigation();
+                    }
+                  }}
+                  data-testid="start-get-me-home-btn"
+                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-500 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-600 active:scale-95 shadow-md"
                 >
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-100">
-                    <div className="h-2 w-2 rounded-full bg-accent-400" />
-                  </div>
-                  <span className="truncate text-ink-muted">
-                    {nav.gpsFix ? 'Current location' : 'Starting point'}
-                  </span>
-                </button>
-
-                <button
-                  onClick={nav.swapEndpoints}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink active:scale-90"
-                  aria-label="Swap endpoints"
-                >
-                  <ArrowUpDown size={15} />
+                  <Home size={16} />
+                  {needsSetup ? 'Set Home First' : 'Get Me Home'}
                 </button>
 
                 <button
                   onClick={() => setShowRouteSearch('to')}
-                  className="flex flex-1 items-center gap-2 rounded-2xl border border-line bg-surface px-3 py-2.5 text-left text-sm transition-colors hover:border-accent-300"
-                  data-testid="search-to-btn"
+                  data-testid="search-route-btn"
+                  className="flex items-center justify-center gap-1.5 rounded-full border border-line bg-surface-subtle px-5 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-surface"
                 >
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-100">
-                    <Navigation size={12} className="text-accent-400" />
-                  </div>
-                  <span className="truncate text-ink-muted">
-                    {nav.destination?.label ?? nav.home?.label ?? 'Choose destination'}
-                  </span>
+                  <Search size={16} />
+                  <span>Search</span>
                 </button>
               </div>
             </div>
           )}
-
-          {/* Instruction bar */}
-          {hasRoute && nav.phase !== 'locating' && nav.phase !== 'calculating' && (
-            <InstructionBar nav={nav} />
-          )}
-
-          {/* Calculating */}
-          {(nav.phase === 'locating' || nav.phase === 'calculating') && (
-            <div className="flex items-center justify-center gap-2 border-t border-line bg-surface-raised px-6 py-5 text-sm font-medium text-accent-600">
-              <Loader2 size={16} className="animate-spin" />
-              {nav.phase === 'locating' ? 'LOCATING GPS…' : 'CALCULATING REAL-WORLD ROUTE…'}
-            </div>
-          )}
-
-          {/* Travel mode + quick destinations (when idle) */}
-          {(nav.phase === 'idle' || nav.phase === 'arrived') && !selectedPin && (
-            <div className="border-t border-line bg-surface-raised px-5 py-4">
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Travel mode</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {(['drive', 'walk', 'bike'] as TravelMode[]).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => nav.setTravelMode(m)}
-                    className={`flex items-center justify-center gap-1.5 rounded-2xl border py-3 text-sm font-medium transition-all ${
-                      nav.travelMode === m
-                        ? 'border-accent-300 bg-accent-50/40 text-accent-600'
-                        : 'border-line text-ink-muted hover:bg-surface-subtle'
-                    }`}
-                    data-testid={`travel-mode-${m}`}
-                  >
-                    {m === 'walk' && <Footprints size={16} />}
-                    {m === 'drive' && <Car size={16} />}
-                    {m === 'bike' && <Bike size={16} />}
-                    {m === 'walk' ? 'Walk' : m === 'drive' ? 'Drive' : 'Bike'}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <QuickChip
-                  icon={<Home size={13} />}
-                  label="Home"
-                  onClick={() => {
-                    if (nav.home) {
-                      nav.setDestination({ lat: nav.home.latitude, lng: nav.home.longitude, label: nav.home.label });
-                      void nav.startNavigation({ lat: nav.home.latitude, lng: nav.home.longitude, label: nav.home.label });
-                    }
-                  }}
-                />
-                {nav.savedPlaces
-                  .filter((p) => p.type === 'work' || p.type === 'favorite')
-                  .slice(0, 3)
-                  .map((p) => (
-                    <QuickChip
-                      key={p.id}
-                      icon={p.type === 'work' ? <Briefcase size={13} /> : <Star size={13} />}
-                      label={p.label}
-                      onClick={() => {
-                        nav.setDestination({ lat: p.latitude, lng: p.longitude, label: p.label });
-                        void nav.startNavigation({ lat: p.latitude, lng: p.longitude, label: p.label });
-                      }}
-                    />
-                  ))}
-              </div>
-            </div>
-          )}
-
-          {/* Bottom action bar */}
-          <div className="flex items-center gap-3 border-t border-line bg-surface-raised px-5 py-4 safe-bottom">
-            {isNavigating ? (
-              <button
-                onClick={nav.stopNavigation}
-                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-error px-6 py-3.5 text-sm font-semibold text-white transition-all hover:brightness-105 active:scale-95"
-                data-testid="end-navigation-btn"
-              >
-                <Square size={16} fill="currentColor" />END NAVIGATION
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  const dest = nav.destination ?? (nav.home ? { lat: nav.home.latitude, lng: nav.home.longitude, label: nav.home.label } : null);
-                  if (dest) void nav.startNavigation(dest);
-                }}
-                disabled={nav.installing}
-                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent-300 px-6 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-400 active:scale-95 disabled:opacity-50"
-                data-testid="start-navigation-btn"
-              >
-                <Navigation size={18} fill="currentColor" />
-                {nav.route ? 'RESUME NAVIGATION' : 'START NAVIGATION'}
-              </button>
-            )}
-          </div>
-        </>
-      )}
-
-      {/* Street View Mock Modal */}
-      {showStreetView && selectedPin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
-          <div className="relative w-full max-w-lg rounded-3xl bg-surface p-6 shadow-float">
-            <div className="flex items-center justify-between border-b border-line pb-4">
-              <h3 className="text-lg font-bold text-ink">Street View Preview</h3>
-              <button onClick={() => setShowStreetView(false)} className="rounded-full p-2 text-ink-muted hover:bg-surface-subtle">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="relative mt-4 h-64 w-full overflow-hidden rounded-2xl bg-black/80 flex items-center justify-center">
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent z-10" />
-              {/* Simulated panoramic street view photo */}
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-accent-600/40 via-surface-raised/20 to-black/90 opacity-90" />
-              <div className="z-20 text-center px-4">
-                <Compass size={40} className="mx-auto text-accent-400 animate-pulse" />
-                <p className="mt-3 text-sm font-bold text-white">{selectedPin.label}</p>
-                <p className="mt-1 text-xs text-white/70">{selectedPin.address || 'Real-World Street View'}</p>
-              </div>
-            </div>
-            <div className="mt-5 flex justify-end">
-              <button
-                onClick={() => setShowStreetView(false)}
-                className="rounded-full bg-accent-300 px-6 py-2.5 text-xs font-semibold text-white transition-all hover:bg-accent-400"
-              >
-                Close Preview
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
-      {/* Overlays */}
-      {showOfflineMaps && <OfflineMapsPanel onClose={() => setShowOfflineMaps(false)} />}
+      {/* Modals */}
       {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => setShowHomeSetup(false)} />}
-      {typeof showRouteSearch === 'string' && (
-        <RouteSearchPanel mode={showRouteSearch} onClose={() => setShowRouteSearch(null)} />
-      )}
-      {showSettings && <RouteSettingsPanel onClose={() => setShowSettings(false)} />}
+      {showOfflineMaps && <OfflineMapsPanel onClose={() => setShowOfflineMaps(false)} />}
+      {showRouteSearch && <RouteSearchPanel mode={showRouteSearch} onClose={() => setShowRouteSearch(null)} />}
     </div>
-  );
-}
-
-function NeedsSetup({ onSetup, gpsStatus }: { onSetup: () => void; gpsStatus: string }) {
-  return (
-    <div className="relative flex flex-1 flex-col items-center justify-center p-6">
-      <Tulip size={28} className="absolute left-[15%] bottom-[18%] -rotate-12 text-accent-200 opacity-50" />
-      <Tulip size={22} className="absolute right-[18%] bottom-[20%] rotate-12 text-accent-200 opacity-40" />
-      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-100 text-accent-500">
-        <Home size={36} />
-      </div>
-      <p className="mt-5 text-xl font-semibold text-ink">Set Your Home</p>
-      <p className="mt-2 max-w-xs text-center text-sm text-ink-faint">
-        Set your home location to enable real-world Google Maps routing & navigation.
-      </p>
-      <button
-        onClick={onSetup}
-        className="mt-6 flex items-center gap-2 rounded-full bg-accent-300 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-400 active:scale-95"
-        data-testid="set-home-btn"
-      >
-        <MapPin size={18} /> Set home location
-      </button>
-      {gpsStatus === 'denied' && (
-        <p className="mt-4 max-w-xs text-center text-xs text-error">
-          Location permission denied. Enable location access in your browser settings.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function QuickChip({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:border-accent-300 hover:text-ink active:scale-95"
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
-
-function InstructionBar({ nav }: { nav: ReturnType<typeof useNav> }) {
-  if (!nav.route || nav.route.instructions.length === 0) return null;
-  const idx = Math.min(nav.nextInstructionIndex, nav.route.instructions.length - 1);
-  const instr = nav.route.instructions[idx];
-  const nextInstr = nav.route.instructions[idx + 1];
-
-  return (
-    <div className="border-t border-line bg-surface-raised px-5 py-4">
-      <div className="flex items-center gap-4">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-accent-100 text-accent-500">
-          <TurnIcon type={instr.type} />
-        </div>
-        <div className="min-w-0 flex-1">
-          {instr.type === 'arrive' ? (
-            <p className="text-lg font-semibold text-ink">Arriving at {nav.destination?.label ?? nav.home?.label}</p>
-          ) : (
-            <>
-              <p className="text-sm font-medium text-ink-faint">
-                {formatDistance(instr.distanceMeters)} · then
-              </p>
-              <p className="text-lg font-semibold leading-tight text-ink">
-                {instructionText(instr.type, instr.roadName)}
-              </p>
-            </>
-          )}
-          {nextInstr && nextInstr.type !== 'arrive' && (
-            <p className="mt-0.5 text-xs text-ink-faint">
-              Then {formatDistance(nextInstr.distanceMeters)}: {instructionText(nextInstr.type, nextInstr.roadName)}
-            </p>
-          )}
-        </div>
-        <div className="shrink-0 text-right">
-          <p className="text-2xl font-bold text-ink">{formatDistance(nav.remainingDistance)}</p>
-          <p className="text-xs text-ink-faint">{formatDuration(nav.remainingDuration)}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RouteSettingsPanel({ onClose }: { onClose: () => void }) {
-  const nav = useNav();
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end animate-slide-in">
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex h-full w-full max-w-sm flex-col overflow-hidden border-l border-line bg-surface shadow-float animate-slide-in">
-        <div className="flex items-center justify-between border-b border-line px-6 py-5">
-          <h2 className="font-display text-xl text-ink">Route Options</h2>
-          <button onClick={onClose} className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink">
-            <X size={20} />
-          </button>
-        </div>
-        <div className="flex-1 space-y-5 overflow-y-auto p-6">
-          <div>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">Route Type</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {(['fastest', 'shortest'] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => nav.setRoutingPrefs({ routeType: t })}
-                  className={`rounded-2xl border py-3 text-sm font-medium capitalize transition-all ${
-                    nav.routingPrefs.routeType === t
-                      ? 'border-accent-300 bg-accent-50/40 text-accent-600'
-                      : 'border-line text-ink-muted hover:bg-surface-subtle'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">Avoid</h3>
-            <label className="flex items-center justify-between rounded-3xl border border-line bg-surface-raised p-4">
-              <span className="text-sm font-medium text-ink">Highways</span>
-              <Switch checked={nav.routingPrefs.avoidHighways} onChange={(v) => nav.setRoutingPrefs({ avoidHighways: v })} />
-            </label>
-            <label className="mt-2.5 flex items-center justify-between rounded-3xl border border-line bg-surface-raised p-4">
-              <span className="text-sm font-medium text-ink">Tolls</span>
-              <Switch checked={nav.routingPrefs.avoidTolls} onChange={(v) => nav.setRoutingPrefs({ avoidTolls: v })} />
-            </label>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? 'bg-accent-300' : 'bg-line-strong'}`}
-      role="switch"
-      aria-checked={checked}
-    >
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-0.5'}`} />
-    </button>
   );
 }
 
 function statusLabel(nav: ReturnType<typeof useNav>): string {
-  switch (nav.phase) {
-    case 'idle': return 'Ready · Google Maps Real-World';
-    case 'locating': return 'Locating GPS…';
-    case 'calculating': return 'Calculating route…';
-    case 'navigating': return `${nav.regions.length} offline area${nav.regions.length !== 1 ? 's' : ''} · Live GPS`;
-    case 'recalculating': return 'Recalculating route…';
-    case 'off-coverage': return 'Outside coverage';
-    case 'arrived': return 'You have arrived';
-    default: return '';
-  }
-}
-
-function gpsLabel(status: string): string {
-  switch (status) {
-    case 'found': return 'GPS OK';
-    case 'locating': return 'LOCATING…';
-    case 'weak': return 'GPS WEAK';
-    case 'stale': return 'GPS STALE';
-    case 'denied': return 'GPS DENIED';
-    case 'unavailable': return 'NO GPS';
-    default: return 'GPS OFF';
-  }
-}
-
-function instructionText(type: InstructionType, roadName: string): string {
-  const name = roadName || 'the road';
-  switch (type) {
-    case 'depart': return `Head out on ${name}`;
-    case 'turn-left': return `Turn left onto ${name}`;
-    case 'turn-right': return `Turn right onto ${name}`;
-    case 'slight-left': return `Slight left onto ${name}`;
-    case 'slight-right': return `Slight right onto ${name}`;
-    case 'sharp-left': return `Sharp left onto ${name}`;
-    case 'sharp-right': return `Sharp right onto ${name}`;
-    case 'straight': return `Continue on ${name}`;
-    case 'uturn': return `U-turn onto ${name}`;
-    case 'arrive': return `Arrive at ${name}`;
-    default: return `Continue on ${name}`;
-  }
-}
-
-function TurnIcon({ type }: { type: InstructionType }) {
-  const size = 28;
-  switch (type) {
-    case 'turn-left': return <Navigation size={size} style={{ transform: 'rotate(-90deg)' }} />;
-    case 'turn-right': return <Navigation size={size} style={{ transform: 'rotate(90deg)' }} />;
-    case 'slight-left': return <Navigation size={size} style={{ transform: 'rotate(-45deg)' }} />;
-    case 'slight-right': return <Navigation size={size} style={{ transform: 'rotate(45deg)' }} />;
-    case 'sharp-left': return <Navigation size={size} style={{ transform: 'rotate(-135deg)' }} />;
-    case 'sharp-right': return <Navigation size={size} style={{ transform: 'rotate(135deg)' }} />;
-    case 'uturn': return <RefreshCw size={size} />;
-    case 'arrive': return <Home size={size} />;
-    case 'depart': return <Navigation size={size} />;
-    default: return <Navigation size={size} />;
-  }
-}
-
-function StatusBadge({ icon, label, tone }: { icon: React.ReactNode; label: string; tone: 'success' | 'warning' | 'error' }) {
-  const tones = {
-    success: 'bg-success/15 text-success',
-    warning: 'bg-warning/15 text-warning',
-    error: 'bg-error/15 text-error',
-  };
-  return (
-    <span className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${tones[tone]}`}>
-      {icon}
-      {label}
-    </span>
-  );
-}
-
-function Check({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
+  if (nav.phase === 'navigating') return 'Navigating';
+  if (nav.phase === 'calculating') return 'Calculating road route…';
+  if (nav.phase === 'route-unavailable') return 'Route unavailable';
+  if (nav.phase === 'arrived') return 'Arrived at destination';
+  if (nav.regions.length > 0) return `${nav.regions.length} offline map regions ready`;
+  return 'Interactive Map Ready';
 }

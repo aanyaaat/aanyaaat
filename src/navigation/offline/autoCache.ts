@@ -1,25 +1,25 @@
-import type { OfflineRegion, GpsFix } from '@/navigation/domain/types';
-import { listRegions, saveRegion } from '@/navigation/offline/regions';
+import type { GpsFix, OfflineRegionSummary, OfflineRegionData } from '@/navigation/domain/types';
+import { listRegionSummaries, saveRegionData, deleteRegionData, canStoreBytes } from '@/navigation/offline/regions';
 import { fetchOsmBbox } from '@/navigation/offline/overpass';
 
 /**
  * Smart Automatic Offline Cache Manager.
  *
- * When the device is online, this module intelligently builds an offline
- * cache based on actual usage — without requiring the user to manually
- * download every area.
+ * Automatic Overpass background downloads are DISABLED by default to keep the application
+ * predictable, user-controlled, and policy-compliant.
  *
- * It caches:
- * - Roads the user drives/walks on (via GPS tracking)
- * - Surrounding areas around the current location
- * - Routes to Home and Work
- *
- * The cache continuously improves over time based on actual usage.
+ * When explicitly enabled by the user, strict bounds are enforced:
+ * - Maximum 3 auto-cached regions
+ * - Maximum 32 MB total auto-cache size
+ * - Minimum 10 minutes between downloads
+ * - Minimum 1,000m movement
  */
 
-const AUTO_CACHE_RADIUS_KM = 3; // Small radius for auto-cache tiles
-const AUTO_CACHE_MIN_INTERVAL_MS = 60_000; // Don't re-cache the same area more than once per minute
-const AUTO_CACHE_MIN_DISTANCE_M = 500; // Only cache if moved 500m from last cache point
+const AUTO_CACHE_RADIUS_KM = 3;
+const AUTO_CACHE_MIN_INTERVAL_MS = 600_000; // 10 minutes
+const AUTO_CACHE_MIN_DISTANCE_M = 1000; // 1 km
+const MAX_AUTO_REGIONS = 3;
+const MAX_AUTO_STORAGE_BYTES = 32 * 1024 * 1024; // 32 MB
 
 interface CachePoint {
   lat: number;
@@ -29,11 +29,15 @@ interface CachePoint {
 
 let lastCachePoint: CachePoint | null = null;
 let isCaching = false;
-let autoCacheEnabled = true;
+let autoCacheEnabled = false; // Disabled by default
 
-/** Enable or disable automatic caching. */
+/** Enable or disable automatic background caching. */
 export function setAutoCacheEnabled(enabled: boolean): void {
   autoCacheEnabled = enabled;
+}
+
+export function isAutoCacheEnabled(): boolean {
+  return autoCacheEnabled;
 }
 
 /** Check if auto-caching is currently running. */
@@ -42,8 +46,7 @@ export function isAutoCaching(): boolean {
 }
 
 /**
- * Called on each GPS fix while online. Decides whether to cache the
- * surrounding area based on distance moved and time since last cache.
+ * Called on GPS fixes. Only executes if explicitly enabled and bounds are satisfied.
  */
 export async function maybeCacheArea(fix: GpsFix): Promise<void> {
   if (!autoCacheEnabled || isCaching) return;
@@ -51,23 +54,22 @@ export async function maybeCacheArea(fix: GpsFix): Promise<void> {
 
   const now = Date.now();
 
-  // Check if we've moved enough or enough time has passed
   if (lastCachePoint) {
     const dist = haversineMeters(fix.latitude, fix.longitude, lastCachePoint.lat, lastCachePoint.lng);
     const timeSince = now - lastCachePoint.timestamp;
-    if (dist < AUTO_CACHE_MIN_DISTANCE_M && timeSince < AUTO_CACHE_MIN_INTERVAL_MS) {
+    if (dist < AUTO_CACHE_MIN_DISTANCE_M || timeSince < AUTO_CACHE_MIN_INTERVAL_MS) {
       return;
     }
   }
 
-  // Check if this area is already covered by an installed region
-  const existing = await listRegions();
-  const alreadyCovered = existing.some(
+  const existingSummaries = await listRegionSummaries();
+  const alreadyCovered = existingSummaries.some(
     (r) =>
+      r.status === 'ready' &&
       fix.latitude >= r.bbox.south &&
       fix.latitude <= r.bbox.north &&
       fix.longitude >= r.bbox.west &&
-      fix.longitude <= r.bbox.east,
+      fix.longitude <= r.bbox.east
   );
 
   if (alreadyCovered) {
@@ -75,7 +77,12 @@ export async function maybeCacheArea(fix: GpsFix): Promise<void> {
     return;
   }
 
-  // Cache the surrounding area
+  // Manage auto-cache limits before starting
+  await evictAutoCacheIfNeeded(existingSummaries);
+
+  const okToStore = await canStoreBytes(8 * 1024 * 1024);
+  if (!okToStore) return;
+
   isCaching = true;
   try {
     const deg = AUTO_CACHE_RADIUS_KM / 111 + 0.005;
@@ -84,94 +91,56 @@ export async function maybeCacheArea(fix: GpsFix): Promise<void> {
     const west = fix.longitude - deg;
     const east = fix.longitude + deg;
 
-    const region = await fetchOsmBbox(south, west, north, east, () => {});
-    region.id = `auto_${Math.round(fix.latitude * 1000)}_${Math.round(fix.longitude * 1000)}`;
-    region.label = `Auto-cached area`;
-    region.centerLat = fix.latitude;
-    region.centerLng = fix.longitude;
-    region.radiusKm = AUTO_CACHE_RADIUS_KM;
-    region.createdAt = now;
-    region.updatedAt = now;
-    region.version = 1;
-    region.bbox = { south, west, north, east };
+    const rawRegion = await fetchOsmBbox(south, west, north, east, undefined);
+    const regionId = `auto_${Math.round(fix.latitude * 1000)}_${Math.round(fix.longitude * 1000)}`;
 
-    await saveRegion(region);
+    const summary: OfflineRegionSummary = {
+      id: regionId,
+      label: `Auto-cached area`,
+      centerLat: fix.latitude,
+      centerLng: fix.longitude,
+      radiusKm: AUTO_CACHE_RADIUS_KM,
+      createdAt: now,
+      updatedAt: now,
+      bbox: { south, west, north, east },
+      sizeBytes: rawRegion.sizeBytes,
+      version: 1,
+      roadCount: rawRegion.roads?.length || 0,
+      poiCount: rawRegion.pois?.length || 0,
+      status: 'ready',
+      auto: true,
+    };
+
+    const data: OfflineRegionData = {
+      regionId,
+      nodes: rawRegion.nodes || {},
+      edges: rawRegion.edges || [],
+      roads: rawRegion.roads || [],
+      pois: rawRegion.pois || [],
+      version: 1,
+    };
+
+    await saveRegionData(summary, data);
     lastCachePoint = { lat: fix.latitude, lng: fix.longitude, timestamp: now };
   } catch {
-    // Auto-cache failures are silent — this is a background enhancement
+    // Silent failure for background auto-cache
   } finally {
     isCaching = false;
   }
 }
 
-/**
- * Predictively cache a route corridor — caches a thin strip along a route
- * so the user can navigate it offline later.
- */
-export async function cacheRouteCorridor(
-  coordinates: { lat: number; lng: number }[],
-  corridorWidthKm = 2,
-): Promise<void> {
-  if (!autoCacheEnabled || isCaching) return;
-  if (coordinates.length < 2) return;
+async function evictAutoCacheIfNeeded(existingSummaries: OfflineRegionSummary[]): Promise<void> {
+  const autoSummaries = existingSummaries
+    .filter((s) => s.auto)
+    .sort((a, b) => a.createdAt - b.createdAt); // Oldest first
 
-  isCaching = true;
-  try {
-    // Sample points along the route at ~2km intervals
-    const samplePoints: { lat: number; lng: number }[] = [];
-    let accumulated = 0;
-    samplePoints.push(coordinates[0]);
+  let totalSizeBytes = autoSummaries.reduce((sum, s) => sum + s.sizeBytes, 0);
 
-    for (let i = 1; i < coordinates.length; i++) {
-      const d = haversineMeters(
-        coordinates[i - 1].lat,
-        coordinates[i - 1].lng,
-        coordinates[i].lat,
-        coordinates[i].lng,
-      );
-      accumulated += d;
-      if (accumulated >= 2000) {
-        samplePoints.push(coordinates[i]);
-        accumulated = 0;
-      }
-    }
-
-    // Cache each sample point area (deduplicating overlapping ones)
-    const existing = await listRegions();
-    for (const pt of samplePoints) {
-      const alreadyCovered = existing.some(
-        (r) =>
-          pt.lat >= r.bbox.south &&
-          pt.lat <= r.bbox.north &&
-          pt.lng >= r.bbox.west &&
-          pt.lng <= r.bbox.east,
-      );
-      if (alreadyCovered) continue;
-
-      const deg = corridorWidthKm / 111 + 0.005;
-      const south = pt.lat - deg;
-      const north = pt.lat + deg;
-      const west = pt.lng - deg;
-      const east = pt.lng + deg;
-
-      try {
-        const region = await fetchOsmBbox(south, west, north, east, () => {});
-        region.id = `corridor_${Math.round(pt.lat * 1000)}_${Math.round(pt.lng * 1000)}`;
-        region.label = `Route corridor`;
-        region.centerLat = pt.lat;
-        region.centerLng = pt.lng;
-        region.radiusKm = corridorWidthKm;
-        region.createdAt = Date.now();
-        region.updatedAt = Date.now();
-        region.version = 1;
-        region.bbox = { south, west, north, east };
-        await saveRegion(region);
-      } catch {
-        // Continue to next point even if one fails
-      }
-    }
-  } finally {
-    isCaching = false;
+  while (autoSummaries.length >= MAX_AUTO_REGIONS || totalSizeBytes > MAX_AUTO_STORAGE_BYTES) {
+    const oldest = autoSummaries.shift();
+    if (!oldest) break;
+    totalSizeBytes -= oldest.sizeBytes;
+    await deleteRegionData(oldest.id);
   }
 }
 

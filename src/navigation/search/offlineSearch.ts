@@ -1,10 +1,5 @@
-import type { OfflineRegion, Poi } from '@/navigation/domain/types';
+import type { OfflineRegionData, OfflineRegionSummary, OfflineRegion, Poi } from '@/navigation/domain/types';
 import { haversineMeters } from '@/navigation/gps/gps';
-
-/**
- * Offline search index — searches POIs and road names within downloaded
- * offline regions. Works entirely without internet.
- */
 
 export interface OfflineSearchResult {
   name: string;
@@ -17,16 +12,12 @@ export interface OfflineSearchResult {
   regionId: string;
 }
 
-/**
- * Search downloaded regions for places and roads matching the query.
- * Uses fuzzy token matching (same algorithm as the online search).
- */
 export function searchOffline(
   query: string,
-  regions: OfflineRegion[],
+  regions: OfflineRegionData[] | OfflineRegionSummary[] | OfflineRegion[],
   refLat?: number,
   refLng?: number,
-  limit = 20,
+  limit = 20
 ): OfflineSearchResult[] {
   const q = query.trim().toLowerCase();
   if (!q || regions.length === 0) return [];
@@ -34,8 +25,12 @@ export function searchOffline(
   const results: OfflineSearchResult[] = [];
 
   for (const region of regions) {
+    const regionId = 'regionId' in region ? region.regionId : region.id;
+    const pois = 'pois' in region ? region.pois || [] : [];
+    const roads = 'roads' in region ? region.roads || [] : [];
+
     // Search POIs
-    for (const poi of region.pois) {
+    for (const poi of pois) {
       const name = poi.name.toLowerCase();
       const score = fuzzyScore(q, name);
       if (score > 0.3) {
@@ -50,22 +45,21 @@ export function searchOffline(
               ? haversineMeters(refLat, refLng, poi.lat, poi.lng)
               : undefined,
           score,
-          regionId: region.id,
+          regionId,
         });
       }
     }
 
     // Search road names (deduplicated)
     const seenRoads = new Set<string>();
-    for (const road of region.roads) {
+    for (const road of roads) {
       if (!road.name) continue;
       const name = road.name.toLowerCase();
       if (seenRoads.has(name)) continue;
       seenRoads.add(name);
 
       const score = fuzzyScore(q, name);
-      if (score > 0.3) {
-        // Use the midpoint of the road as its location
+      if (score > 0.3 && road.coords && road.coords.length > 0) {
         const mid = road.coords[Math.floor(road.coords.length / 2)];
         results.push({
           name: road.name,
@@ -77,13 +71,12 @@ export function searchOffline(
               ? haversineMeters(refLat, refLng, mid[1], mid[0])
               : undefined,
           score,
-          regionId: region.id,
+          regionId,
         });
       }
     }
   }
 
-  // Sort: exact matches first, then by distance, then by score
   results.sort((a, b) => {
     const aExact = a.score >= 0.95;
     const bExact = b.score >= 0.95;
@@ -99,10 +92,6 @@ export function searchOffline(
   return results.slice(0, limit);
 }
 
-/**
- * Fuzzy similarity score [0..1].
- * Uses prefix-aware token matching + normalized Levenshtein distance.
- */
 function fuzzyScore(query: string, target: string): number {
   if (!target) return 0;
   if (query === target) return 1;

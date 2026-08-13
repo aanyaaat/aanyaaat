@@ -8,7 +8,7 @@ import { bearingDeg, cardinalFromBearing, haversineMeters, formatDistance } from
  * Works with GPS coordinates only — no map tiles, no routing.
  * Uses device orientation if available to show a live compass needle.
  */
-export function CompassFallback() {
+export function CompassFallback({ onClose }: { onClose?: () => void }) {
   const nav = useNav();
 
   const bearing = useMemo(() => {

@@ -8,11 +8,9 @@ import {
   Loader2,
   Check,
   Navigation,
-  Bus,
-  Navigation2,
 } from 'lucide-react';
 import { useNav } from '@/navigation/state/NavStore';
-import { getSingleFix, haversineMeters, formatDistance } from '@/navigation/gps/gps';
+import { getSingleFix } from '@/navigation/gps/gps';
 import type { HomeLocation } from '@/navigation/domain/types';
 import {
   searchPlaces,
@@ -30,61 +28,61 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [refCoords, setRefCoords] = useState<{ lat: number; lng: number } | null>(null);
 
-  // Try to get GPS for local-biased search (non-blocking, best-effort)
   useEffect(() => {
-    getSingleFix(5000)
-      .then((fix) => setRefCoords({ lat: fix.latitude, lng: fix.longitude }))
-      .catch(() => {});
-  }, []);
+    if (nav.gpsFix) {
+      setRefCoords({ lat: nav.gpsFix.latitude, lng: nav.gpsFix.longitude });
+    } else {
+      getSingleFix(5000)
+        .then((fix) => setRefCoords({ lat: fix.latitude, lng: fix.longitude }))
+        .catch(() => {});
+    }
+  }, [nav.gpsFix]);
 
-  // Debounced search function
-  const doSearch = useCallback(
-    async (q: string) => {
-      if (q.trim().length < 2) {
-        setSuggestions([]);
-        setSearching(false);
-        return;
-      }
-      setSearching(true);
-      try {
-        const results = await searchPlaces(q, refCoords?.lat, refCoords?.lng);
-        setSuggestions(results);
-        setShowSuggestions(true);
-      } catch (e) {
-        setError(`Search failed: ${(e as Error).message}`);
-      } finally {
-        setSearching(false);
-      }
-    },
-    [refCoords],
-  );
+  const performSearch = useCallback(async (query: string) => {
+    if (query.trim().length < 2) {
+      setSuggestions([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    setError(null);
+    try {
+      const results = await searchPlaces(query, refCoords?.lat, refCoords?.lng);
+      setSuggestions(results);
+    } catch (e) {
+      setError(`Search failed: ${(e as Error).message}`);
+      setSuggestions([]);
+    } finally {
+      setSearching(false);
+    }
+  }, [refCoords]);
 
-  // Create debounced version
-  const debouncedRef = useRef(debounce(doSearch, 280));
+  const debouncedSearchRef = useRef(debounce(performSearch, 300));
   useEffect(() => {
-    debouncedRef.current = debounce(doSearch, 280);
-  }, [doSearch]);
+    debouncedSearchRef.current = debounce(performSearch, 300);
+  }, [performSearch]);
 
-  // Trigger debounced search on input
   useEffect(() => {
     if (searchQuery.trim().length >= 2) {
-      debouncedRef.current.debounced(searchQuery);
+      debouncedSearchRef.current.debounced(searchQuery);
     } else {
       setSuggestions([]);
-      setShowSuggestions(false);
     }
-    return () => debouncedRef.current.cancel();
+    return () => debouncedSearchRef.current.cancel();
   }, [searchQuery]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => abortSearch();
   }, []);
+
+  const handleExplicitSearch = () => {
+    debouncedSearchRef.current.cancel();
+    void performSearch(searchQuery);
+  };
 
   const useCurrentLocation = async () => {
     setLocating(true);
@@ -94,6 +92,9 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
       setLat(String(fix.latitude));
       setLng(String(fix.longitude));
       setRefCoords({ lat: fix.latitude, lng: fix.longitude });
+      if (!label || label === 'Home') {
+        setLabel('Current Location');
+      }
     } catch (e) {
       setError(`Could not get your location: ${(e as Error).message}`);
     } finally {
@@ -106,26 +107,25 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
     setLng(r.lon);
     const main = r.name || r.display_name.split(',')[0]?.trim() || r.display_name;
     if (!label || label === 'Home') setLabel(main);
-    setShowSuggestions(false);
-    setSearchQuery('');
     setSuggestions([]);
+    setSearchQuery('');
   };
 
   const save = () => {
     const latNum = parseFloat(lat);
     const lngNum = parseFloat(lng);
-    if (isNaN(latNum) || isNaN(lngNum)) {
-      setError('Invalid coordinates.');
+    if (isNaN(latNum) || isNaN(lngNum) || latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+      setError('Invalid coordinates. Latitude must be -90..90 and Longitude -180..180.');
       return;
     }
-    const home: HomeLocation = {
+    const homeLocation: HomeLocation = {
       label: label.trim() || 'Home',
       latitude: latNum,
       longitude: lngNum,
     };
-    nav.setHomeLocation(home);
+    nav.setHomeLocation(homeLocation);
     setSaved(true);
-    setTimeout(() => onProceed(), 800);
+    setTimeout(() => onProceed(), 600);
   };
 
   const remove = () => {
@@ -137,7 +137,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" data-testid="home-setup-modal">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-[32px] border border-line bg-surface shadow-float animate-scale-in">
         <div className="flex items-center justify-between border-b border-line px-6 py-5">
@@ -147,17 +147,17 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
             </div>
             <div>
               <h2 className="font-display text-xl text-ink">Set Your Home</h2>
-              <p className="text-[11px] text-ink-faint">Stored only on this device</p>
+              <p className="text-[11px] text-ink-faint">Stored locally on this device</p>
             </div>
           </div>
-          <button onClick={onClose} className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink">
+          <button onClick={onClose} data-testid="close-home-setup-btn" className="rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink">
             <X size={20} />
           </button>
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto p-6">
           {error && (
-            <div className="rounded-2xl border border-error/30 bg-error/5 px-4 py-3 text-sm text-error">
+            <div className="rounded-2xl border border-error/30 bg-error/5 px-4 py-3 text-sm text-error" data-testid="home-setup-error">
               {error}
             </div>
           )}
@@ -167,6 +167,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
             <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Label</label>
             <input
               type="text"
+              data-testid="home-label-input"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="Home"
@@ -178,79 +179,60 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
           <button
             onClick={useCurrentLocation}
             disabled={locating}
+            data-testid="use-current-location-btn"
             className="flex w-full items-center justify-center gap-2 rounded-2xl bg-accent-200 px-5 py-3.5 text-sm font-medium text-accent-700 transition-all hover:bg-accent-300 active:scale-95 disabled:opacity-50"
           >
             {locating ? <Loader2 size={16} className="animate-spin" /> : <MapPin size={16} />}
             {locating ? 'Locating you…' : 'Use my current location'}
           </button>
 
-          {/* Search with live suggestions */}
+          {/* Search Location */}
           <div className="relative">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Search (online)</label>
-            <div className="relative">
-              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-                onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                placeholder="Search place, bus stop, or pincode…"
-                className="w-full rounded-2xl border border-line bg-surface-raised py-3 pl-10 pr-10 text-sm text-ink placeholder:text-ink-faint focus:border-accent-300 focus:outline-none"
-              />
-              {searching && (
-                <Loader2 size={16} className="absolute right-3.5 top-1/2 -translate-y-1/2 animate-spin text-accent-400" />
-              )}
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Search Address / Place</label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+                <input
+                  type="text"
+                  data-testid="home-search-input"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleExplicitSearch()}
+                  placeholder="Type address or search place…"
+                  className="w-full rounded-2xl border border-line bg-surface-raised py-3 pl-10 pr-4 text-sm text-ink placeholder:text-ink-faint focus:border-accent-300 focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleExplicitSearch}
+                disabled={searching || searchQuery.trim().length < 2}
+                data-testid="home-search-btn"
+                className="rounded-2xl bg-accent-500 px-4 py-3 text-sm font-medium text-white transition-all hover:bg-accent-600 disabled:opacity-50"
+              >
+                {searching ? <Loader2 size={16} className="animate-spin" /> : 'Search'}
+              </button>
             </div>
 
-            {/* Live suggestions dropdown */}
-            {showSuggestions && suggestions.length > 0 && (
-              <div className="absolute z-10 mt-1.5 max-h-64 w-full overflow-y-auto rounded-2xl border border-line bg-surface-raised shadow-float">
+            {/* Results dropdown */}
+            {suggestions.length > 0 && (
+              <div className="mt-2 max-h-56 w-full overflow-y-auto rounded-2xl border border-line bg-surface-raised shadow-float">
                 {suggestions.map((r) => {
                   const parts = r.display_name.split(',');
                   const main = r.name || parts[0]?.trim() || r.display_name;
-                  const context = parts.slice(1, 4).join(',').trim();
-                  const isBusStop = r.category === 'highway' && r.type === 'bus_stop';
-                  const dist = r._distanceMeters;
-                  const isExact = (r._score ?? 0) >= 0.95;
                   return (
                     <button
                       key={r.place_id}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectResult(r);
-                      }}
+                      onClick={() => selectResult(r)}
                       className="flex w-full items-start gap-2.5 border-b border-line/50 px-3.5 py-3 text-left transition-colors last:border-b-0 hover:bg-surface-subtle"
                     >
-                      <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${isBusStop ? 'bg-success/15 text-success' : 'bg-accent-100 text-accent-500'}`}>
-                        {isBusStop ? <Bus size={14} /> : <MapPin size={14} />}
-                      </div>
+                      <MapPin size={14} className="mt-0.5 shrink-0 text-accent-500" />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <p className="truncate text-sm font-medium text-ink">{main}</p>
-                          {isExact && (
-                            <span className="shrink-0 rounded-full bg-accent-100 px-1.5 py-0.5 text-[10px] font-semibold text-accent-600">
-                              Exact
-                            </span>
-                          )}
-                        </div>
-                        {context && <p className="truncate text-xs text-ink-faint">{context}</p>}
-                        {dist !== undefined && dist < 100000 && (
-                          <p className="mt-0.5 text-[10px] font-medium text-ink-faint">
-                            {formatDistance(dist)} away
-                          </p>
-                        )}
+                        <p className="truncate text-sm font-medium text-ink">{main}</p>
+                        <p className="truncate text-xs text-ink-faint">{r.display_name}</p>
                       </div>
                     </button>
                   );
                 })}
-              </div>
-            )}
-
-            {/* Empty state hint */}
-            {showSuggestions && suggestions.length === 0 && !searching && searchQuery.trim().length >= 2 && (
-              <div className="absolute z-10 mt-1.5 w-full rounded-2xl border border-line bg-surface-raised px-4 py-3 text-center text-sm text-ink-faint shadow-float">
-                No results found. Try a different spelling.
               </div>
             )}
           </div>
@@ -261,6 +243,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Latitude</label>
               <input
                 type="text"
+                data-testid="home-lat-input"
                 value={lat}
                 onChange={(e) => setLat(e.target.value)}
                 placeholder="e.g. 28.6139"
@@ -271,6 +254,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Longitude</label>
               <input
                 type="text"
+                data-testid="home-lng-input"
                 value={lng}
                 onChange={(e) => setLng(e.target.value)}
                 placeholder="e.g. 77.2090"
@@ -282,6 +266,7 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
           {nav.home && (
             <button
               onClick={remove}
+              data-testid="delete-home-btn"
               className="flex w-full items-center justify-center gap-2 rounded-2xl border border-error/30 py-3 text-sm text-error transition-colors hover:bg-error/10"
             >
               <Trash2 size={14} /> Delete saved home
@@ -293,7 +278,8 @@ export function HomeSetup({ onClose, onProceed }: { onClose: () => void; onProce
           <button
             onClick={save}
             disabled={!lat || !lng || saved}
-            className="flex w-full items-center justify-center gap-2 rounded-full bg-accent-300 px-6 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-400 active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-subtle disabled:text-ink-faint"
+            data-testid="save-home-btn"
+            className="flex w-full items-center justify-center gap-2 rounded-full bg-accent-500 px-6 py-3.5 text-sm font-semibold text-white transition-all hover:bg-accent-600 active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-subtle disabled:text-ink-faint"
           >
             {saved ? <><Check size={16} /> Home saved</> : <><Navigation size={16} /> Save & continue</>}
           </button>
