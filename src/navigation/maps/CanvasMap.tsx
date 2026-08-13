@@ -5,6 +5,7 @@ import type {
   GpsFix,
   HomeLocation,
   SavedPlace,
+  GeoJsonRoad,
 } from '@/navigation/domain/types';
 import {
   project,
@@ -43,16 +44,27 @@ interface CanvasMapProps {
   mapStyle?: MapStyle;
   onTap?: (lat: number, lng: number) => void;
   onLongPress?: (lat: number, lng: number) => void;
-  onSelectPin?: (pin: { lat: number; lng: number; label: string; type: string }) => void;
+  onSelectPin?: (pin: { id: string; label: string; lat: number; lng: number; type: string }) => void;
 }
 
 const ROAD_COLORS: Record<number, string> = {
-  7: '#e892a2', 6: '#f2a678', 5: '#ffc090', 4: '#ffd8a8',
-  3: '#e8e0d0', 2: '#d8d0c0', 1: '#c8c0b8',
+  7: '#e11d48', // Motorway
+  6: '#ea580c', // Trunk
+  5: '#f59e0b', // Primary
+  4: '#10b981', // Secondary
+  3: '#06b6d4', // Tertiary
+  2: '#94a3b8', // Residential
+  1: '#cbd5e1', // Service/Footway
 };
 
 const ROAD_WIDTHS: Record<number, number> = {
-  7: 5, 6: 4.5, 5: 3.5, 4: 2.5, 3: 2, 2: 1.5, 1: 1,
+  7: 4,
+  6: 3.5,
+  5: 3,
+  4: 2.5,
+  3: 2,
+  2: 1.5,
+  1: 1,
 };
 
 const POI_COLORS: Record<string, string> = {
@@ -74,19 +86,18 @@ export function CanvasMap({
   poiMarkers = [],
   recenterSignal,
   followMode,
-  rotation,
   mapStyle = 'standard',
   onTap,
   onLongPress,
   onSelectPin,
 }: CanvasMapProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const vpRef = useRef<Viewport>({
     centerLat: gpsFix?.latitude ?? home?.latitude ?? 28.6139,
     centerLng: gpsFix?.longitude ?? home?.longitude ?? 77.2090,
-    zoom: 14,
-    width: 400,
-    height: 400,
+    zoom: 15,
+    width: window.innerWidth,
+    height: window.innerHeight,
   });
 
   const pointersRef = useRef<Map<number, PointerInfo>>(new Map());
@@ -137,22 +148,38 @@ export function CanvasMap({
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Recenter map camera on GPS position when recenterSignal changes or followMode is activated
+  useEffect(() => {
+    userPannedRef.current = false;
+    const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
+    if (curGps) {
+      vpRef.current.centerLat = curGps.latitude;
+      vpRef.current.centerLng = curGps.longitude;
+      if (followMode) {
+        vpRef.current.zoom = 17;
+      }
+      requestRender();
+    }
+  }, [recenterSignal, followMode, requestRender]);
+
+  // Center on GPS updates if followMode is active or user hasn't panned
   useEffect(() => {
     const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
-    if (curGps && !userPannedRef.current) {
+    if (curGps && (!userPannedRef.current || followMode)) {
       vpRef.current.centerLat = curGps.latitude;
       vpRef.current.centerLng = curGps.longitude;
       requestRender();
     }
-  }, [recenterSignal, gpsFix, home, requestRender]);
+  }, [gpsFix, home, followMode, requestRender]);
 
+  // Center on destination preview when newly set
   useEffect(() => {
-    if (destination && !userPannedRef.current) {
+    if (destination && !followMode) {
       vpRef.current.centerLat = destination.lat;
       vpRef.current.centerLng = destination.lng;
       requestRender();
     }
-  }, [destination, requestRender]);
+  }, [destination, followMode, requestRender]);
 
   const renderMap = () => {
     const canvas = canvasRef.current;
@@ -164,11 +191,11 @@ export function CanvasMap({
     const props = propsRef.current;
     const isDark = props.mapStyle === 'dark';
 
-    // 1. Clear background
-    ctx.fillStyle = isDark ? '#191a1a' : '#f0efe9';
+    // 1. Fill background
+    ctx.fillStyle = isDark ? '#1a1a1a' : '#f8f9fa';
     ctx.fillRect(0, 0, vp.width, vp.height);
 
-    // 2. Basemap Raster Tiles
+    // 2. Render Tile Pyramids
     const tileZoom = Math.max(0, Math.min(19, Math.floor(vp.zoom)));
     const tileScale = Math.pow(2, vp.zoom - tileZoom);
     const tileSize = 256 * tileScale;
@@ -189,11 +216,10 @@ export function CanvasMap({
         const screenX = halfW + (tx * tileSize - globalCenterPxX);
         const screenY = halfH + (ty * tileSize - globalCenterPxY);
 
-        const cachedImg = getCachedTile(tileZoom, tx, ty, isDark);
-        if (cachedImg) {
-          ctx.drawImage(cachedImg, screenX, screenY, tileSize, tileSize);
+        const img = getCachedTile(tileZoom, tx, ty, isDark);
+        if (img) {
+          ctx.drawImage(img, screenX, screenY, tileSize, tileSize);
         } else {
-          // Parent tile fallback for 0-delay smooth scrolling
           const fallback = getParentTileFallback(tileZoom, tx, ty, isDark);
           if (fallback) {
             ctx.drawImage(
@@ -222,7 +248,7 @@ export function CanvasMap({
     // Pre-fetch surrounding 1-ring tiles for instant pan responsiveness
     prefetchSurroundingTiles(tileZoom, minTileX, maxTileX, minTileY, maxTileY, isDark, () => requestRender());
 
-    // 3. Render Offline Region Vector Roads (if downloaded)
+    // 3. Render Offline Region Vector Roads (Batch-grouped & Viewport Culled for 60 FPS)
     const bounds = viewportBounds(vp);
     for (const regionSummary of props.regions) {
       if (
@@ -245,24 +271,48 @@ export function CanvasMap({
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
+      // Group roads by roadClass to minimize stroke calls
+      const classRoadsMap = new Map<number, GeoJsonRoad[]>();
+
       for (const road of regionData.roads) {
         if (!road.coords || road.coords.length < 2) continue;
-        const color = ROAD_COLORS[road.roadClass] || (isDark ? '#404040' : '#d0d0d0');
-        const width = ROAD_WIDTHS[road.roadClass] || 1;
+        if (vp.zoom < 13 && road.roadClass <= 2) continue; // Skip minor roads at low zoom
+
+        // Viewport Bounding Box Culling
+        if (road.bbox) {
+          if (
+            road.bbox.north < bounds.south ||
+            road.bbox.south > bounds.north ||
+            road.bbox.east < bounds.west ||
+            road.bbox.west > bounds.east
+          ) {
+            continue;
+          }
+        }
+
+        const list = classRoadsMap.get(road.roadClass) || [];
+        list.push(road);
+        classRoadsMap.set(road.roadClass, list);
+      }
+
+      for (const [rClass, roadList] of classRoadsMap.entries()) {
+        const color = ROAD_COLORS[rClass] || (isDark ? '#404040' : '#d0d0d0');
+        const width = (ROAD_WIDTHS[rClass] || 1) * (vp.zoom >= 15 ? 1.5 : 1);
 
         ctx.strokeStyle = color;
-        ctx.lineWidth = width * (vp.zoom >= 15 ? 1.5 : 1);
+        ctx.lineWidth = width;
         ctx.beginPath();
 
-        let started = false;
-        for (const [lng, lat] of road.coords) {
-          const pt = project(lat, lng, vp);
-
-          if (!started) {
-            ctx.moveTo(pt.x, pt.y);
-            started = true;
-          } else {
-            ctx.lineTo(pt.x, pt.y);
+        for (const road of roadList) {
+          let started = false;
+          for (const [lng, lat] of road.coords) {
+            const pt = project(lat, lng, vp);
+            if (!started) {
+              ctx.moveTo(pt.x, pt.y);
+              started = true;
+            } else {
+              ctx.lineTo(pt.x, pt.y);
+            }
           }
         }
         ctx.stroke();
