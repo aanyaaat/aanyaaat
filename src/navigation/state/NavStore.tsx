@@ -38,6 +38,7 @@ import {
   listSavedPlaces,
   deletePlace,
   getRegionData,
+  isAreaAlreadyCovered,
 } from '@/navigation/offline/regions';
 import { createRoutingService, type RoutingService } from '@/navigation/routing/routingService';
 import { routeOnline } from '@/navigation/routing/onlineRouter';
@@ -179,6 +180,8 @@ export function NavProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const [regionsLoaded, setRegionsLoaded] = useState(false);
+
   // Load region summaries and saved places on mount
   useEffect(() => {
     void (async () => {
@@ -191,6 +194,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
       const [rSummaries, places] = await Promise.all([listRegionSummaries(), listSavedPlaces()]);
       setRegions(rSummaries);
       setSavedPlaces(places);
+      setRegionsLoaded(true);
     })();
   }, []);
 
@@ -645,18 +649,42 @@ export function NavProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Auto-download 30km radius offline region on page load whenever 0 regions are installed
-  const auto30kmTriggeredRef = useRef(false);
+  // Intelligent 30km Auto-Download:
+  // 1. On page load: If 0 maps exist, immediately download the 30km map around user position/home.
+  // 2. Subsequent locations: If user moves to an entirely new location (no quadrant overlap / not already covered), download. Never download overlapping/same quadrants twice.
+  const autoDownloadInProgressRef = useRef(false);
 
   useEffect(() => {
-    if (!auto30kmTriggeredRef.current && networkRef.current === 'online' && regions.length === 0 && !installing) {
-      const cLat = gpsFix?.latitude ?? home?.latitude ?? 28.6139;
-      const cLng = gpsFix?.longitude ?? home?.longitude ?? 77.2090;
+    if (!regionsLoaded || installing || networkRef.current === 'offline' || autoDownloadInProgressRef.current) return;
 
-      auto30kmTriggeredRef.current = true;
-      void installOfflineRegion(30, 'Local Area (30km)', { lat: cLat, lng: cLng });
+    const targetLat = gpsFix?.latitude ?? home?.latitude ?? 28.6139;
+    const targetLng = gpsFix?.longitude ?? home?.longitude ?? 77.2090;
+
+    // Case 1: On page load, no maps exist -> Immediately download initial 30km map
+    if (regions.length === 0) {
+      autoDownloadInProgressRef.current = true;
+      const label = home?.label ? `${home.label} Area (30km)` : 'Local Area (30km)';
+      void installOfflineRegion(30, label, { lat: targetLat, lng: targetLng }).finally(() => {
+        autoDownloadInProgressRef.current = false;
+      });
+      return;
     }
-  }, [gpsFix, home, regions.length, installing, installOfflineRegion]);
+
+    // Case 2: Check if current position is an entirely new location with no quadrant/region coverage
+    if (regions.length > 0) {
+      const alreadyCovered = isAreaAlreadyCovered(targetLat, targetLng, regions, 30);
+      if (!alreadyCovered) {
+        // Completely new location / no same quadrants -> download new 30km region
+        autoDownloadInProgressRef.current = true;
+        void installOfflineRegion(30, `Area (${targetLat.toFixed(2)}°, ${targetLng.toFixed(2)}°)`, {
+          lat: targetLat,
+          lng: targetLng,
+        }).finally(() => {
+          autoDownloadInProgressRef.current = false;
+        });
+      }
+    }
+  }, [regionsLoaded, regions, gpsFix, home, installing, installOfflineRegion]);
 
   const value = useMemo<NavState>(
     () => ({

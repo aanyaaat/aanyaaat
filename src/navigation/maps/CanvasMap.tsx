@@ -299,8 +299,8 @@ export function CanvasMap({
       }
     }
 
-    // Pre-fetch surrounding 1-ring tiles for instant pan responsiveness
-    prefetchSurroundingTiles(tileZoom, minTileX, maxTileX, minTileY, maxTileY, isDark, () => requestRender());
+    // Pre-fetch surrounding tiles quietly in background for pan responsiveness
+    prefetchSurroundingTiles(tileZoom, minTileX, maxTileX, minTileY, maxTileY, isDark);
 
     // 3. Render Offline Region Vector Roads (Batch-grouped & Viewport Culled for 60 FPS)
     const bounds = viewportBounds(vp);

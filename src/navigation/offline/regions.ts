@@ -121,7 +121,87 @@ export function resetDbCache(): void {
   void closeDb();
 }
 
-/* --------------------------- Storage Quota --------------------------- */
+/* --------------------------- Storage Quota & Compression --------------------------- */
+
+export async function compressData(obj: any): Promise<any> {
+  if (typeof CompressionStream !== 'undefined' && typeof Blob !== 'undefined') {
+    try {
+      const jsonStr = JSON.stringify(obj);
+      const stream = new Blob([jsonStr]).stream();
+      const compressedStream = stream.pipeThrough(new CompressionStream('deflate'));
+      const response = new Response(compressedStream);
+      const buffer = await response.arrayBuffer();
+      return new Uint8Array(buffer);
+    } catch {
+      return obj;
+    }
+  }
+  return obj;
+}
+
+export async function decompressData<T = any>(data: any): Promise<T | null> {
+  if (!data) return null;
+  if (data instanceof Uint8Array || (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer)) {
+    if (typeof DecompressionStream !== 'undefined' && typeof Blob !== 'undefined') {
+      try {
+        const stream = new Blob([data]).stream();
+        const decompressedStream = stream.pipeThrough(new DecompressionStream('deflate'));
+        const response = new Response(decompressedStream);
+        const text = await response.text();
+        return JSON.parse(text) as T;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return data as T;
+}
+
+export function calculateDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+/**
+ * Checks if a target location / quadrant is already covered by existing offline map regions.
+ * Avoids redundant downloads of overlapping or identical quadrants.
+ */
+export function isAreaAlreadyCovered(
+  targetLat: number,
+  targetLng: number,
+  existingRegions: OfflineRegionSummary[],
+  coverageRadiusKm = 30
+): boolean {
+  if (!existingRegions || existingRegions.length === 0) return false;
+
+  for (const region of existingRegions) {
+    const distKm = calculateDistanceKm(targetLat, targetLng, region.centerLat, region.centerLng);
+    if (distKm < (region.radiusKm || coverageRadiusKm) * 0.65) {
+      return true;
+    }
+
+    if (
+      region.bbox &&
+      targetLat >= region.bbox.south &&
+      targetLat <= region.bbox.north &&
+      targetLng >= region.bbox.west &&
+      targetLng <= region.bbox.east
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export async function getStorageEstimate(): Promise<{ usage: number; quota: number; free: number }> {
   if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
@@ -177,12 +257,21 @@ export async function getRegionSummary(id: string): Promise<OfflineRegionSummary
 export async function getRegionData(regionId: string): Promise<OfflineRegionData | null> {
   try {
     const db = await getDb();
-    return await new Promise((resolve, reject) => {
+    const rawRecord = await new Promise<any>((resolve, reject) => {
       const tx = db.transaction(DATA_REGION_STORE, 'readonly');
       const req = tx.objectStore(DATA_REGION_STORE).get(regionId);
-      req.onsuccess = () => resolve((req.result as OfflineRegionData) ?? null);
+      req.onsuccess = () => resolve(req.result ?? null);
       req.onerror = () => reject(req.error);
     });
+
+    if (!rawRecord) return null;
+
+    if (rawRecord.compressed) {
+      const decompressed = await decompressData<OfflineRegionData>(rawRecord.compressed);
+      return decompressed;
+    }
+
+    return rawRecord as OfflineRegionData;
   } catch {
     return null;
   }
@@ -202,10 +291,15 @@ export async function saveRegionData(
   data: OfflineRegionData
 ): Promise<void> {
   const db = await getDb();
+  const compressed = await compressData(data);
+  const dataRecord = compressed !== data
+    ? { regionId: data.regionId, compressed, version: data.version }
+    : data;
+
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([META_REGION_STORE, DATA_REGION_STORE], 'readwrite');
     tx.objectStore(META_REGION_STORE).put(summary);
-    tx.objectStore(DATA_REGION_STORE).put(data);
+    tx.objectStore(DATA_REGION_STORE).put(dataRecord);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

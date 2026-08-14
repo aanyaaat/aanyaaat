@@ -7,7 +7,8 @@
 import { saveTileToDb, getTileFromDb } from './tileDb';
 
 const MEMORY_CACHE = new Map<string, HTMLImageElement>();
-const MAX_MEMORY_TILES = 1500;
+const IN_FLIGHT_KEYS = new Set<string>();
+const MAX_MEMORY_TILES = 1200;
 const CHROME_TILE_CACHE = 'aanyaa_map_tiles_chrome_v1';
 
 async function cacheUrlInChromeCache(url: string) {
@@ -58,7 +59,7 @@ export function getParentTileFallback(
   y: number,
   dark = false
 ): { img: HTMLImageElement; cropX: number; cropY: number; cropSize: number } | null {
-  for (let delta = 1; delta <= 4; delta++) {
+  for (let delta = 1; delta <= 3; delta++) {
     const parentZ = z - delta;
     if (parentZ < 0) break;
     const factor = Math.pow(2, delta);
@@ -86,7 +87,7 @@ export function loadTile(
   x: number,
   y: number,
   dark: boolean,
-  onLoaded: () => void
+  onLoaded?: () => void
 ): HTMLImageElement | null {
   const key = `${dark ? 'd' : 's'}_${z}_${x}_${y}`;
 
@@ -98,57 +99,62 @@ export function loadTile(
     return null;
   }
 
-  // 1. Try to load from IndexedDB persistent tile store first
+  if (IN_FLIGHT_KEYS.has(key)) {
+    return null;
+  }
+
+  IN_FLIGHT_KEYS.add(key);
+
+  // 1. Try to load from IndexedDB persistent tile store first asynchronously
   void getTileFromDb(key).then((dataUrl) => {
     if (dataUrl && !MEMORY_CACHE.has(key)) {
       const dbImg = new Image();
       dbImg.onload = () => {
+        IN_FLIGHT_KEYS.delete(key);
         MEMORY_CACHE.set(key, dbImg);
-        onLoaded();
+        onLoaded?.();
       };
       dbImg.src = dataUrl;
     }
   });
 
   const url = getTileUrl(z, x, y, dark);
-  if (!url) return null;
+  if (!url) {
+    IN_FLIGHT_KEYS.delete(key);
+    return null;
+  }
 
-  // Pre-cache URL into Chrome CacheStorage
   void cacheUrlInChromeCache(url);
 
   const img = new Image();
 
   img.onload = () => {
+    IN_FLIGHT_KEYS.delete(key);
     if (MEMORY_CACHE.size >= MAX_MEMORY_TILES) {
       const firstKey = MEMORY_CACHE.keys().next().value;
       if (firstKey) MEMORY_CACHE.delete(firstKey);
     }
     MEMORY_CACHE.set(key, img);
-    onLoaded();
+    onLoaded?.();
 
-    // Persist tile into IndexedDB for 100% offline reload capability
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth || 256;
-      canvas.height = img.naturalHeight || 256;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        const dataUrl = canvas.toDataURL('image/png');
-        void saveTileToDb(key, dataUrl);
-      }
-    } catch {
-      /* ignore canvas export errors */
+    // Persist tile asynchronously in background via blob without freezing canvas thread
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(() => {
+        void persistTileBlob(url, key);
+      });
     }
   };
 
   img.onerror = () => {
-    // Retry once with alternative mirror if standard OSM tile had temporary delay
     const fallbackUrl = `https://a.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
     const fallbackImg = new Image();
     fallbackImg.onload = () => {
+      IN_FLIGHT_KEYS.delete(key);
       MEMORY_CACHE.set(key, fallbackImg);
-      onLoaded();
+      onLoaded?.();
+    };
+    fallbackImg.onerror = () => {
+      IN_FLIGHT_KEYS.delete(key);
     };
     fallbackImg.src = fallbackUrl;
   };
@@ -157,17 +163,39 @@ export function loadTile(
   return null;
 }
 
-/** Pre-fetch 2 extra rings of surrounding tiles so panning is 100% seamless */
+async function persistTileBlob(url: string, key: string) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        void saveTileToDb(key, reader.result);
+      }
+    };
+    reader.readAsDataURL(blob);
+  } catch {
+    /* ignore offline/CORS save error */
+  }
+}
+
+let lastPrefetchTime = 0;
+
+/** Pre-fetch surrounding tiles quietly in the background without triggering render loops */
 export function prefetchSurroundingTiles(
   z: number,
   minX: number,
   maxX: number,
   minY: number,
   maxY: number,
-  dark: boolean,
-  onLoaded: () => void
+  dark: boolean
 ) {
-  const margin = 2;
+  const now = Date.now();
+  if (now - lastPrefetchTime < 400) return;
+  lastPrefetchTime = now;
+
+  const margin = 1;
   const pMinX = minX - margin;
   const pMaxX = maxX + margin;
   const pMinY = minY - margin;
@@ -177,7 +205,7 @@ export function prefetchSurroundingTiles(
     for (let y = pMinY; y <= pMaxY; y++) {
       if (x >= minX && x <= maxX && y >= minY && y <= maxY) continue;
       if (!getCachedTile(z, x, y, dark)) {
-        loadTile(z, x, y, dark, onLoaded);
+        loadTile(z, x, y, dark); // no onLoaded callback to prevent cascade render storm
       }
     }
   }
