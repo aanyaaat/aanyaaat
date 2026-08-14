@@ -146,3 +146,16 @@ export function viewportBounds(vp: Viewport): { south: number; west: number; nor
     east: Math.max(topLeft.lng, bottomRight.lng),
   };
 }
+
+/** Rotate a pixel point around a center pixel by angleRad radians. */
+export function rotatePoint(pt: Pixel, center: Pixel, angleRad: number): Pixel {
+  if (Math.abs(angleRad) < 1e-6) return pt;
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  const dx = pt.x - center.x;
+  const dy = pt.y - center.y;
+  return {
+    x: center.x + (dx * cos - dy * sin),
+    y: center.y + (dx * sin + dy * cos),
+  };
+}

@@ -16,6 +16,7 @@ import {
   viewportBounds,
   lngToGlobalX,
   latToGlobalY,
+  rotatePoint,
   type Viewport,
 } from '@/navigation/maps/projection';
 import { regionDataManager } from '@/navigation/maps/regionDataManager';
@@ -40,7 +41,8 @@ interface CanvasMapProps {
   poiMarkers?: PoiMarker[];
   recenterSignal: number;
   followMode: boolean;
-  rotation: number;
+  rotation?: number;
+  onRotate?: (newRotation: number) => void;
   mapStyle?: MapStyle;
   onTap?: (lat: number, lng: number) => void;
   onLongPress?: (lat: number, lng: number) => void;
@@ -76,6 +78,15 @@ const POI_COLORS: Record<string, string> = {
 
 interface PointerInfo { id: number; x: number; y: number; }
 
+interface PinchInfo {
+  dist: number;
+  zoom: number;
+  angle: number;
+  rotation: number;
+  anchorX: number;
+  anchorY: number;
+}
+
 export function CanvasMap({
   regions,
   route,
@@ -87,6 +98,7 @@ export function CanvasMap({
   recenterSignal,
   followMode,
   rotation = 0,
+  onRotate,
   mapStyle = 'standard',
   onTap,
   onLongPress,
@@ -102,9 +114,10 @@ export function CanvasMap({
   });
 
   const pointersRef = useRef<Map<number, PointerInfo>>(new Map());
-  const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
-  const pinchRef = useRef<{ dist: number; zoom: number; anchorX: number; anchorY: number } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; moved: boolean; isRotating?: boolean } | null>(null);
+  const pinchRef = useRef<PinchInfo | null>(null);
   const userPannedRef = useRef(false);
+  const initialCenteredRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -118,6 +131,7 @@ export function CanvasMap({
     poiMarkers,
     followMode,
     rotation,
+    onRotate,
     mapStyle,
     onTap,
     onLongPress,
@@ -135,12 +149,13 @@ export function CanvasMap({
       poiMarkers,
       followMode,
       rotation,
+      onRotate,
       mapStyle,
       onTap,
       onLongPress,
       onSelectPin,
     };
-  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, followMode, rotation, mapStyle, onTap, onLongPress, onSelectPin]);
+  }, [regions, route, gpsFix, home, destination, savedPlaces, poiMarkers, followMode, rotation, onRotate, mapStyle, onTap, onLongPress, onSelectPin]);
 
   const requestRender = useCallback(() => {
     if (rafRef.current === null) {
@@ -151,38 +166,58 @@ export function CanvasMap({
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Recenter map camera on GPS position when recenterSignal changes or followMode is activated
+  // Initial center on GPS/Home position ONLY ONCE on startup
   useEffect(() => {
-    userPannedRef.current = false;
-    const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
-    if (curGps) {
-      vpRef.current.centerLat = curGps.latitude;
-      vpRef.current.centerLng = curGps.longitude;
-      if (followMode) {
-        vpRef.current.zoom = 17;
+    if (!initialCenteredRef.current) {
+      const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
+      if (curGps) {
+        initialCenteredRef.current = true;
+        vpRef.current.centerLat = curGps.latitude;
+        vpRef.current.centerLng = curGps.longitude;
+        requestRender();
       }
-      requestRender();
     }
-  }, [recenterSignal, followMode, requestRender]);
+  }, [gpsFix, home, requestRender]);
 
-  // Center on GPS updates if followMode is active or user hasn't panned
+  // Recenter map camera explicitly on GPS position ONLY when recenterSignal changes
   useEffect(() => {
-    const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
-    if (curGps && (!userPannedRef.current || followMode)) {
-      vpRef.current.centerLat = curGps.latitude;
-      vpRef.current.centerLng = curGps.longitude;
+    if (recenterSignal > 0) {
+      userPannedRef.current = false;
+      const curGps = gpsFix ?? (home ? { latitude: home.latitude, longitude: home.longitude } : null);
+      if (curGps) {
+        vpRef.current.centerLat = curGps.latitude;
+        vpRef.current.centerLng = curGps.longitude;
+        if (followMode) {
+          vpRef.current.zoom = 17;
+        }
+        requestRender();
+      }
+    }
+  }, [recenterSignal, requestRender]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Smoothly track GPS during active navigation ONLY IF user hasn't manually panned away
+  useEffect(() => {
+    if (followMode && !userPannedRef.current && gpsFix) {
+      vpRef.current.centerLat = gpsFix.latitude;
+      vpRef.current.centerLng = gpsFix.longitude;
       requestRender();
     }
-  }, [gpsFix, home, followMode, requestRender]);
+  }, [gpsFix, followMode, requestRender]);
 
-  // Center on destination preview when newly set
+  // Center on destination preview when newly selected
   useEffect(() => {
     if (destination && !followMode) {
+      userPannedRef.current = false;
       vpRef.current.centerLat = destination.lat;
       vpRef.current.centerLng = destination.lng;
       requestRender();
     }
   }, [destination, followMode, requestRender]);
+
+  // Re-render when rotation changes
+  useEffect(() => {
+    requestRender();
+  }, [rotation, requestRender]);
 
   const renderMap = () => {
     const canvas = canvasRef.current;
@@ -198,7 +233,19 @@ export function CanvasMap({
     ctx.fillStyle = isDark ? '#1a1a1a' : '#f8f9fa';
     ctx.fillRect(0, 0, vp.width, vp.height);
 
-    // 2. Render Tile Pyramids
+    const bearingRad = ((props.rotation || 0) * Math.PI) / 180;
+    const isRotated = Math.abs(bearingRad) > 1e-4;
+
+    ctx.save();
+
+    // Apply viewport rotation around screen center
+    if (isRotated) {
+      ctx.translate(vp.width / 2, vp.height / 2);
+      ctx.rotate(-bearingRad);
+      ctx.translate(-vp.width / 2, -vp.height / 2);
+    }
+
+    // 2. Render Tile Pyramids (expanded tile coverage to avoid corner clipping when rotated)
     const tileZoom = Math.max(0, Math.min(19, Math.floor(vp.zoom)));
     const tileScale = Math.pow(2, vp.zoom - tileZoom);
     const tileSize = 256 * tileScale;
@@ -209,10 +256,14 @@ export function CanvasMap({
     const globalCenterPxX = lngToGlobalX(vp.centerLng, tileZoom) * tileScale;
     const globalCenterPxY = latToGlobalY(vp.centerLat, tileZoom) * tileScale;
 
-    const minTileX = Math.floor((globalCenterPxX - halfW) / tileSize);
-    const maxTileX = Math.floor((globalCenterPxX + halfW) / tileSize);
-    const minTileY = Math.floor((globalCenterPxY - halfH) / tileSize);
-    const maxTileY = Math.floor((globalCenterPxY + halfH) / tileSize);
+    const diag = Math.hypot(vp.width, vp.height);
+    const tilesAcross = Math.ceil(diag / tileSize) + 2;
+    const tilesDown = Math.ceil(diag / tileSize) + 2;
+
+    const minTileX = Math.floor((globalCenterPxX - diag / 2) / tileSize);
+    const maxTileX = Math.ceil((globalCenterPxX + diag / 2) / tileSize);
+    const minTileY = Math.floor((globalCenterPxY - diag / 2) / tileSize);
+    const maxTileY = Math.ceil((globalCenterPxY + diag / 2) / tileSize);
 
     for (let tx = minTileX; tx <= maxTileX; tx++) {
       for (let ty = minTileY; ty <= maxTileY; ty++) {
@@ -279,9 +330,8 @@ export function CanvasMap({
 
       for (const road of regionData.roads) {
         if (!road.coords || road.coords.length < 2) continue;
-        if (vp.zoom < 13 && road.roadClass <= 2) continue; // Skip minor roads at low zoom
+        if (vp.zoom < 13 && road.roadClass <= 2) continue;
 
-        // Viewport Bounding Box Culling
         if (road.bbox) {
           if (
             road.bbox.north < bounds.south ||
@@ -354,7 +404,7 @@ export function CanvasMap({
     // 5. POI Markers
     for (const poi of props.poiMarkers) {
       const pt = project(poi.lat, poi.lng, vp);
-      if (pt.x >= -20 && pt.x <= vp.width + 20 && pt.y >= -20 && pt.y <= vp.height + 20) {
+      if (pt.x >= -30 && pt.x <= vp.width + 30 && pt.y >= -30 && pt.y <= vp.height + 30) {
         const color = POI_COLORS[poi.type] || '#3b82f6';
 
         ctx.fillStyle = color;
@@ -427,7 +477,7 @@ export function CanvasMap({
 
       if (heading !== null && Number.isFinite(heading)) {
         const rad = ((heading - 90) * Math.PI) / 180;
-        const spreadRad = (35 * Math.PI) / 180; // 30 deg cone width
+        const spreadRad = (35 * Math.PI) / 180;
 
         // Directional Cone of Vision Beam
         const gradient = ctx.createRadialGradient(pt.x, pt.y, 5, pt.x, pt.y, 45);
@@ -446,12 +496,10 @@ export function CanvasMap({
         ctx.translate(pt.x, pt.y);
         ctx.rotate(rad + Math.PI / 2);
 
-        // Arrow drop shadow
         ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
         ctx.shadowBlur = 6;
         ctx.shadowOffsetY = 2;
 
-        // White border
         ctx.fillStyle = '#ffffff';
         ctx.beginPath();
         ctx.moveTo(0, -12);
@@ -461,7 +509,6 @@ export function CanvasMap({
         ctx.closePath();
         ctx.fill();
 
-        // Blue inner arrow
         ctx.fillStyle = '#2563eb';
         ctx.beginPath();
         ctx.moveTo(0, -9);
@@ -486,7 +533,9 @@ export function CanvasMap({
       }
     }
 
-    // 8. Scale Bar
+    ctx.restore(); // Restore unrotated context for UI Scale Bar
+
+    // 8. Scale Bar (Screen-aligned, sharp at bottom)
     const mpp = metersPerPixel(vp.centerLat, vp.zoom);
     const targetPx = 100;
     const targetMeters = targetPx * mpp;
@@ -560,7 +609,12 @@ export function CanvasMap({
     pointersRef.current.set(e.pointerId, { id: e.pointerId, x: e.clientX, y: e.clientY });
 
     if (pointersRef.current.size === 1) {
-      dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
+      dragRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        moved: false,
+        isRotating: e.shiftKey || e.altKey || e.button === 2,
+      };
 
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = setTimeout(() => {
@@ -569,16 +623,24 @@ export function CanvasMap({
           const clickX = e.clientX - rect.left;
           const clickY = e.clientY - rect.top;
 
-          const coords = unproject({ x: clickX, y: clickY }, vpRef.current);
+          const bearingRad = ((propsRef.current.rotation || 0) * Math.PI) / 180;
+          const center = { x: vpRef.current.width / 2, y: vpRef.current.height / 2 };
+          const unrotated = rotatePoint({ x: clickX, y: clickY }, center, bearingRad);
+
+          const coords = unproject(unrotated, vpRef.current);
           propsRef.current.onLongPress?.(coords.lat, coords.lng);
         }
       }, 500);
     } else if (pointersRef.current.size === 2) {
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
       pinchRef.current = {
         dist,
         zoom: vpRef.current.zoom,
+        angle,
+        rotation: propsRef.current.rotation || 0,
         anchorX: (pts[0].x + pts[1].x) / 2,
         anchorY: (pts[0].y + pts[1].y) / 2,
       };
@@ -597,17 +659,37 @@ export function CanvasMap({
     if (dragRef.current) {
       if (Math.hypot(dx, dy) > 3) {
         dragRef.current.moved = true;
+        userPannedRef.current = true;
         if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       }
     }
 
     if (pointersRef.current.size === 1 && dragRef.current?.moved) {
       userPannedRef.current = true;
-      vpRef.current = panViewportByPixels(vpRef.current, dx, dy);
-      requestRender();
+
+      // Check if user is rotating via Shift+drag / Right-click drag on desktop
+      if (dragRef.current.isRotating || e.shiftKey || e.altKey) {
+        const curRot = propsRef.current.rotation || 0;
+        const newRot = (curRot + dx * 0.4 + 360) % 360;
+        propsRef.current.onRotate?.(newRot);
+        requestRender();
+      } else {
+        // Natural rotated panning
+        const bearingRad = ((propsRef.current.rotation || 0) * Math.PI) / 180;
+        const cos = Math.cos(bearingRad);
+        const sin = Math.sin(bearingRad);
+        const worldDx = dx * cos - dy * sin;
+        const worldDy = dx * sin + dy * cos;
+        vpRef.current = panViewportByPixels(vpRef.current, worldDx, worldDy);
+        requestRender();
+      }
     } else if (pointersRef.current.size === 2 && pinchRef.current) {
+      userPannedRef.current = true;
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+
+      // Pinch zoom
       const scale = dist / pinchRef.current.dist;
       const newZoom = pinchRef.current.zoom + Math.log2(scale);
 
@@ -619,8 +701,20 @@ export function CanvasMap({
           y: pinchRef.current.anchorY - rect.top,
         };
         vpRef.current = zoomViewportAtPixel(vpRef.current, newZoom, anchorPx);
-        requestRender();
       }
+
+      // Two-Finger Twist Rotation (Google Maps style)
+      let deltaAngleRad = angle - pinchRef.current.angle;
+      while (deltaAngleRad > Math.PI) deltaAngleRad -= 2 * Math.PI;
+      while (deltaAngleRad < -Math.PI) deltaAngleRad += 2 * Math.PI;
+
+      const deltaDeg = (deltaAngleRad * 180) / Math.PI;
+      if (Math.abs(deltaDeg) > 1.5) {
+        const newRotation = (pinchRef.current.rotation - deltaDeg + 360) % 360;
+        propsRef.current.onRotate?.(newRotation);
+      }
+
+      requestRender();
     }
   };
 
@@ -640,7 +734,11 @@ export function CanvasMap({
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;
 
-        const coords = unproject({ x: clickX, y: clickY }, vpRef.current);
+        const bearingRad = ((propsRef.current.rotation || 0) * Math.PI) / 180;
+        const center = { x: vpRef.current.width / 2, y: vpRef.current.height / 2 };
+        const unrotated = rotatePoint({ x: clickX, y: clickY }, center, bearingRad);
+
+        const coords = unproject(unrotated, vpRef.current);
         propsRef.current.onTap?.(coords.lat, coords.lng);
       }
     }
@@ -648,6 +746,7 @@ export function CanvasMap({
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    userPannedRef.current = true;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -666,6 +765,7 @@ export function CanvasMap({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onWheel={handleWheel}
+      onContextMenu={(e) => e.preventDefault()}
       className="h-full w-full touch-none select-none"
       data-testid="canvas-map"
     />

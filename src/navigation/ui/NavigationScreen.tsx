@@ -14,6 +14,8 @@ import {
   Search,
   Volume2,
   VolumeX,
+  Sliders,
+  Sparkles,
   Coffee,
   Utensils,
   Fuel,
@@ -34,6 +36,8 @@ import { CompassFallback } from '@/navigation/ui/CompassFallback';
 import { OfflineMapsPanel } from '@/navigation/ui/OfflineMapsPanel';
 import { HomeSetup } from '@/navigation/ui/HomeSetup';
 import { RouteSearchPanel } from '@/navigation/ui/RouteSearchPanel';
+import { VoiceSettingsModal } from '@/navigation/ui/VoiceSettingsModal';
+import { speakPersonalized, loadVoiceSettings } from '@/navigation/voice/voiceService';
 import { formatDistance, formatDuration } from '@/navigation/gps/gps';
 import { searchPlaces } from '@/navigation/search/placeSearch';
 import type { TravelMode } from '@/navigation/domain/types';
@@ -50,11 +54,13 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const [showOfflineMaps, setShowOfflineMaps] = useState(false);
   const [showCompass, setShowCompass] = useState(false);
   const [showHomeSetup, setShowHomeSetup] = useState(false);
+  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   const [showRouteSearch, setShowRouteSearch] = useState<'from' | 'to' | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyle>('standard');
   const [showLayerPicker, setShowLayerPicker] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(() => loadVoiceSettings().enabled);
   const [deviceHeading, setDeviceHeading] = useState<number | null>(null);
+  const [mapRotation, setMapRotation] = useState(0);
 
   useEffect(() => {
     const handleOrientation = (e: DeviceOrientationEvent) => {
@@ -91,6 +97,10 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
   const isRouteUnavailable = nav.phase === 'route-unavailable';
   const isNavigating = nav.phase === 'navigating' || nav.phase === 'recalculating';
 
+  const effectiveRotation = mapRotation !== 0
+    ? mapRotation
+    : (isNavigating ? (nav.gpsFix?.heading ?? deviceHeading ?? 0) : 0);
+
   useEffect(() => {
     nav.startGpsOnly();
     return () => {
@@ -98,22 +108,44 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Voice guidance announcement
+  // Personalized voice guidance announcements
   const lastSpokenIndexRef = useRef<number>(-1);
+  const prevNavigatingRef = useRef<boolean>(false);
+
+  // Voice announcement on start navigation
   useEffect(() => {
-    if (!voiceEnabled || !nav.route || nav.route.instructions.length === 0) return;
+    if (!prevNavigatingRef.current && isNavigating && nav.route) {
+      prevNavigatingRef.current = true;
+      const destLabel = nav.destination?.label || 'your destination';
+      if (voiceEnabled) {
+        speakPersonalized(`starting navigation to ${destLabel}. Have a safe journey!`);
+      }
+    } else if (!isNavigating) {
+      prevNavigatingRef.current = false;
+      lastSpokenIndexRef.current = -1;
+    }
+  }, [isNavigating, nav.destination, nav.route, voiceEnabled]);
+
+  // Voice announcement on maneuvers
+  useEffect(() => {
+    if (!voiceEnabled || !nav.route || nav.route.instructions.length === 0 || !isNavigating) return;
     const idx = Math.min(nav.nextInstructionIndex, nav.route.instructions.length - 1);
     if (idx !== lastSpokenIndexRef.current) {
       lastSpokenIndexRef.current = idx;
       const instr = nav.route.instructions[idx];
-      if (instr && 'speechSynthesis' in window) {
-        const text = instr.spoken || `${instr.type} in ${formatDistance(instr.distanceMeters)}`;
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.0;
-        window.speechSynthesis.speak(utterance);
+      if (instr) {
+        let msg = '';
+        if (instr.type === 'arrive') {
+          msg = 'you have arrived at your destination!';
+        } else if (instr.roadName) {
+          msg = `in ${formatDistance(instr.distanceMeters || 150)}, turn towards ${instr.roadName}`;
+        } else {
+          msg = `in ${formatDistance(instr.distanceMeters || 150)}, follow the route ahead`;
+        }
+        speakPersonalized(msg);
       }
     }
-  }, [nav.nextInstructionIndex, nav.route, voiceEnabled]);
+  }, [nav.nextInstructionIndex, nav.route, voiceEnabled, isNavigating]);
 
   // Fetch POIs when category clicked
   const handlePoiCategoryClick = async (categoryKey: string, queryTerm: string) => {
@@ -196,7 +228,9 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <h1 className="text-base font-semibold leading-tight text-ink">Aanyaa Navigation</h1>
-              <p className="text-[11px] leading-tight text-ink-faint">{statusLabel(nav)}</p>
+              <p className="text-[11px] leading-tight text-ink-faint">
+                {nav.phase === 'navigating' ? 'Navigating' : nav.phase === 'locating' ? 'Locating...' : 'Ready'}
+              </p>
             </div>
           </div>
         </div>
@@ -232,15 +266,30 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
             </span>
           )}
 
-          {/* Voice Guidance Toggle */}
-          <button
-            onClick={() => setVoiceEnabled(!voiceEnabled)}
-            className={`rounded-full p-2 transition-colors ${voiceEnabled ? 'bg-accent-100 text-accent-600' : 'bg-surface-subtle text-ink-muted'}`}
-            title={voiceEnabled ? 'Mute voice guidance' : 'Enable voice guidance'}
-            data-testid="voice-toggle-btn"
-          >
-            {voiceEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
+          {/* Voice Guidance Toggle & Custom Voice Settings */}
+          <div className="flex items-center gap-1 rounded-full border border-line bg-surface-subtle p-1">
+            <button
+              onClick={() => {
+                const next = !voiceEnabled;
+                setVoiceEnabled(next);
+              }}
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                voiceEnabled ? 'bg-accent-500 text-white shadow-sm' : 'text-ink-muted hover:text-ink'
+              }`}
+              title={voiceEnabled ? 'Mute voice guidance' : 'Enable voice guidance'}
+              data-testid="voice-toggle-btn"
+            >
+              {voiceEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+            </button>
+            <button
+              onClick={() => setShowVoiceSettings(true)}
+              className="flex h-7 w-7 items-center justify-center rounded-full text-ink-muted hover:bg-surface hover:text-ink transition-colors"
+              title="Customize voice model & Aanya speech settings"
+              data-testid="voice-settings-btn"
+            >
+              <Sliders size={14} />
+            </button>
+          </div>
 
           {/* Offline Maps Button */}
           <button
@@ -266,7 +315,8 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
           poiMarkers={poiMarkers}
           recenterSignal={nav.recenterSignal}
           followMode={nav.followMode}
-          rotation={nav.gpsFix?.heading ?? deviceHeading ?? 0}
+          rotation={effectiveRotation}
+          onRotate={(r) => setMapRotation(r)}
           mapStyle={mapStyle}
           onTap={handleMapTap}
           onLongPress={(lat, lng) => handleMapTap(lat, lng)}
@@ -340,15 +390,39 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
-          {/* Compass view button */}
+          {/* Compass / Reset North button */}
           <button
-            onClick={() => setShowCompass(!showCompass)}
+            onClick={() => {
+              if (effectiveRotation !== 0) {
+                setMapRotation(0);
+              } else {
+                setShowCompass(!showCompass);
+              }
+            }}
             className={`flex h-11 w-11 items-center justify-center rounded-full border border-line shadow-lg backdrop-blur-md transition-all active:scale-95 ${
-              showCompass ? 'bg-accent-500 text-white' : 'bg-surface/90 text-ink hover:bg-surface'
+              effectiveRotation !== 0
+                ? 'bg-surface/95 text-ink hover:bg-surface'
+                : showCompass
+                ? 'bg-accent-500 text-white'
+                : 'bg-surface/90 text-ink hover:bg-surface'
             }`}
-            title="Compass bearing view"
+            title={effectiveRotation !== 0 ? 'Click to reset North' : 'Compass bearing view'}
+            data-testid="compass-btn"
           >
-            <Compass size={20} />
+            <div
+              className="transition-transform duration-200"
+              style={{ transform: `rotate(${-effectiveRotation}deg)` }}
+            >
+              {effectiveRotation !== 0 ? (
+                <div className="relative flex h-6 w-6 items-center justify-center">
+                  <div className="absolute top-0.5 h-3 w-1.5 rounded-t-full bg-red-500 shadow-sm" />
+                  <div className="absolute bottom-0.5 h-3 w-1.5 rounded-b-full bg-slate-400" />
+                  <div className="h-1.5 w-1.5 rounded-full bg-white z-10" />
+                </div>
+              ) : (
+                <Compass size={20} />
+              )}
+            </div>
           </button>
 
           {/* Recenter button */}
@@ -649,6 +723,12 @@ export function NavigationScreen({ onClose }: { onClose: () => void }) {
       {showHomeSetup && <HomeSetup onClose={() => setShowHomeSetup(false)} onProceed={() => setShowHomeSetup(false)} />}
       {showOfflineMaps && <OfflineMapsPanel onClose={() => setShowOfflineMaps(false)} />}
       {showRouteSearch && <RouteSearchPanel mode={showRouteSearch} onClose={() => setShowRouteSearch(null)} />}
+      {showVoiceSettings && (
+        <VoiceSettingsModal
+          onClose={() => setShowVoiceSettings(false)}
+          onUpdate={(s) => setVoiceEnabled(s.enabled)}
+        />
+      )}
     </div>
   );
 }
