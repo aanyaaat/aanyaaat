@@ -185,16 +185,18 @@ export function isAreaAlreadyCovered(
 
   for (const region of existingRegions) {
     const distKm = calculateDistanceKm(targetLat, targetLng, region.centerLat, region.centerLng);
-    if (distKm < (region.radiusKm || coverageRadiusKm) * 0.65) {
+    // If user is within 85% of coverage radius of any region center, it is covered
+    if (distKm < (region.radiusKm || coverageRadiusKm) * 0.85) {
       return true;
     }
 
+    // If within bounding box (with slight buffer)
     if (
       region.bbox &&
-      targetLat >= region.bbox.south &&
-      targetLat <= region.bbox.north &&
-      targetLng >= region.bbox.west &&
-      targetLng <= region.bbox.east
+      targetLat >= region.bbox.south - 0.02 &&
+      targetLat <= region.bbox.north + 0.02 &&
+      targetLng >= region.bbox.west - 0.02 &&
+      targetLng <= region.bbox.east + 0.02
     ) {
       return true;
     }
@@ -371,6 +373,8 @@ export async function saveRegion(region: OfflineRegion): Promise<void> {
   const summary: OfflineRegionSummary = {
     id: region.id,
     label: region.label,
+    placeName: region.placeName,
+    keyAreas: region.keyAreas,
     centerLat: region.centerLat,
     centerLng: region.centerLng,
     radiusKm: region.radiusKm,
@@ -563,11 +567,69 @@ export async function installRegion(
   onProgress?.('Downloading road network from OpenStreetMap…');
   const rawRegion = await fetchOsmBbox(south, west, north, east, onProgress, signal);
 
+  // Extract major named roads and localities to populate keyAreas
+  const areaNameCounts = new Map<string, number>();
+  for (const road of rawRegion.roads || []) {
+    if (road.name && !road.name.toLowerCase().includes('unnamed') && road.name.length > 2) {
+      const clean = road.name.trim();
+      areaNameCounts.set(clean, (areaNameCounts.get(clean) || 0) + 1);
+    }
+  }
+  for (const poi of rawRegion.pois || []) {
+    if (poi.name && poi.name.length > 2) {
+      const clean = poi.name.trim();
+      areaNameCounts.set(clean, (areaNameCounts.get(clean) || 0) + 1);
+    }
+  }
+
+  const sortedKeyAreas = Array.from(areaNameCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name]) => name);
+
+  // Try fast reverse lookup for exact locality/town name
+  let resolvedPlaceName = '';
+  if (typeof navigator !== 'undefined' && navigator.onLine) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2000);
+      const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${centerLat}&lon=${centerLng}&zoom=14&addressdetails=1`;
+      const res = await fetch(url, { headers: { 'Accept-Language': 'en' }, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const json = await res.json();
+        const addr = json.address || {};
+        const town = addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || addr.county;
+        const state = addr.state || '';
+        if (town) {
+          resolvedPlaceName = state ? `${town}, ${state}` : town;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!resolvedPlaceName && sortedKeyAreas.length > 0) {
+    resolvedPlaceName = `${sortedKeyAreas[0]} Area`;
+  }
+
+  let finalLabel = label;
+  if (!label || label.startsWith('Area ·') || label.startsWith('Local Area') || label.startsWith('Area (')) {
+    if (resolvedPlaceName) {
+      finalLabel = `${resolvedPlaceName.split(',')[0]} (${radiusKm}km)`;
+    } else {
+      finalLabel = `Region (${centerLat.toFixed(2)}°, ${centerLng.toFixed(2)}°) · ${radiusKm}km`;
+    }
+  }
+
   const regionId = `region_${Date.now()}_${Math.round(centerLat * 1000)}_${Math.round(centerLng * 1000)}`;
 
   const summary: OfflineRegionSummary = {
     id: regionId,
-    label: label || `Area · ${radiusKm} km`,
+    label: finalLabel,
+    placeName: resolvedPlaceName || undefined,
+    keyAreas: sortedKeyAreas.length > 0 ? sortedKeyAreas : undefined,
     centerLat,
     centerLng,
     radiusKm,

@@ -228,6 +228,10 @@ export function CanvasMap({
     const vp = vpRef.current;
     const props = propsRef.current;
     const isDark = props.mapStyle === 'dark';
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+
+    // Reset and apply DPR scale so all drawing coordinates match CSS pixels (vp.width, vp.height)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 1. Fill background
     ctx.fillStyle = isDark ? '#1a1a1a' : '#f8f9fa';
@@ -582,12 +586,16 @@ export function CanvasMap({
 
     const updateDimensions = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      if (rect.width <= 0 || rect.height <= 0) return;
 
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.scale(dpr, dpr);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      const targetWidth = Math.round(rect.width * dpr);
+      const targetHeight = Math.round(rect.height * dpr);
+
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
 
       vpRef.current.width = rect.width;
       vpRef.current.height = rect.height;
@@ -597,8 +605,14 @@ export function CanvasMap({
     updateDimensions();
     const observer = new ResizeObserver(updateDimensions);
     observer.observe(canvas);
+    window.addEventListener('resize', updateDimensions);
+    window.addEventListener('orientationchange', updateDimensions);
 
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateDimensions);
+      window.removeEventListener('orientationchange', updateDimensions);
+    };
   }, [requestRender]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

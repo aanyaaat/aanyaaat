@@ -653,6 +653,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
   // 1. On page load: If 0 maps exist, immediately download the 30km map around user position/home.
   // 2. Subsequent locations: If user moves to an entirely new location (no quadrant overlap / not already covered), download. Never download overlapping/same quadrants twice.
   const autoDownloadInProgressRef = useRef(false);
+  const initialAutoDownloadAttemptedRef = useRef(false);
 
   useEffect(() => {
     if (!regionsLoaded || installing || networkRef.current === 'offline' || autoDownloadInProgressRef.current) return;
@@ -661,7 +662,8 @@ export function NavProvider({ children }: { children: ReactNode }) {
     const targetLng = gpsFix?.longitude ?? home?.longitude ?? 77.2090;
 
     // Case 1: On page load, no maps exist -> Immediately download initial 30km map
-    if (regions.length === 0) {
+    if (regions.length === 0 && !initialAutoDownloadAttemptedRef.current) {
+      initialAutoDownloadAttemptedRef.current = true;
       autoDownloadInProgressRef.current = true;
       const label = home?.label ? `${home.label} Area (30km)` : 'Local Area (30km)';
       void installOfflineRegion(30, label, { lat: targetLat, lng: targetLng }).finally(() => {
@@ -673,7 +675,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
     // Case 2: Check if current position is an entirely new location with no quadrant/region coverage
     if (regions.length > 0) {
       const alreadyCovered = isAreaAlreadyCovered(targetLat, targetLng, regions, 30);
-      if (!alreadyCovered) {
+      if (!alreadyCovered && !autoDownloadInProgressRef.current) {
         // Completely new location / no same quadrants -> download new 30km region
         autoDownloadInProgressRef.current = true;
         void installOfflineRegion(30, `Area (${targetLat.toFixed(2)}°, ${targetLng.toFixed(2)}°)`, {

@@ -109,6 +109,8 @@ export type RegionStatus = 'ready' | 'downloading' | 'paused' | 'error' | 'corru
 export interface OfflineRegionSummary {
   id: string;
   label: string;
+  placeName?: string;
+  keyAreas?: string[];
   centerLat: number;
   centerLng: number;
   radiusKm: number;

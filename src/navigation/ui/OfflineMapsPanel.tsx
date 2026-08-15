@@ -99,38 +99,72 @@ export function OfflineMapsPanel({ onClose }: { onClose: () => void }) {
           {/* Installed region summaries */}
           {nav.regions.length > 0 && (
             <div className="space-y-3" data-testid="installed-regions-list">
-              {nav.regions.map((r) => (
-                <div key={r.id} className="rounded-3xl border border-accent-300/40 bg-accent-50/30 p-5" data-testid={`region-card-${r.id}`}>
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm font-medium text-success">
-                      <Check size={16} />
-                      {r.label}
+              {nav.regions.map((r) => {
+                const centerCoordStr = `${r.centerLat.toFixed(3)}°N, ${r.centerLng.toFixed(3)}°E`;
+                const boundsStr = r.bbox ? `${r.bbox.south.toFixed(2)}° - ${r.bbox.north.toFixed(2)}°N, ${r.bbox.west.toFixed(2)}° - ${r.bbox.east.toFixed(2)}°E` : '';
+
+                return (
+                  <div key={r.id} className="rounded-3xl border border-accent-300/40 bg-accent-50/20 p-5 shadow-xs transition-all hover:border-accent-400/60" data-testid={`region-card-${r.id}`}>
+                    <div className="mb-2.5 flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2 text-sm font-bold text-success">
+                          <Check size={16} className="shrink-0" />
+                          <span>{r.label}</span>
+                        </div>
+                        {r.placeName && (
+                          <p className="mt-0.5 text-xs font-medium text-ink">
+                            {r.placeName}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-ink-faint">
+                          Center: {centerCoordStr} {boundsStr ? `· Bounds: ${boundsStr}` : ''}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => nav.removeOfflineRegion(r.id)}
+                        disabled={nav.installing}
+                        data-testid={`delete-region-${r.id}`}
+                        className="flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-error/30 bg-surface px-3 py-1.5 text-xs font-semibold text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
                     </div>
-                    <button
-                      onClick={() => nav.removeOfflineRegion(r.id)}
-                      disabled={nav.installing}
-                      data-testid={`delete-region-${r.id}`}
-                      className="flex items-center justify-center gap-1.5 rounded-full border border-error/30 px-3 py-1.5 text-xs text-error transition-colors hover:bg-error/10 disabled:opacity-50"
-                    >
-                      <Trash2 size={12} /> Delete
-                    </button>
+
+                    {r.keyAreas && r.keyAreas.length > 0 && (
+                      <div className="mb-3 flex flex-wrap gap-1.5 pt-1">
+                        {r.keyAreas.slice(0, 5).map((area, i) => (
+                          <span
+                            key={i}
+                            className="rounded-lg border border-line bg-surface-subtle/80 px-2 py-0.5 text-[10px] font-medium text-ink-muted"
+                          >
+                            {area}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2 border-t border-line/60 pt-3 text-xs">
+                      <div className="flex items-center gap-1.5 text-ink-muted">
+                        <HardDrive size={12} className="text-accent-500" /> {formatBytes(r.sizeBytes)} (Compressed)
+                      </div>
+                      <div className="flex items-center gap-1.5 text-ink-muted">
+                        <MapPin size={12} className="text-emerald-500" /> {r.roadCount?.toLocaleString() || 0} roads
+                      </div>
+                      <div className="flex items-center gap-1.5 text-ink-muted">
+                        <Clock size={12} className="text-ink-faint" /> {new Date(r.updatedAt).toLocaleDateString()}
+                      </div>
+                      <div className="flex items-center gap-1.5 text-ink-muted">
+                        <Gauge size={12} className="text-amber-500" /> {r.radiusKm} km radius
+                      </div>
+                    </div>
+
+                    <div className="mt-2.5 rounded-xl bg-surface-subtle/50 px-2.5 py-1.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                      ⚡ Instant Offline Routing Ready · Auto-decompresses in memory
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="flex items-center gap-1.5 text-ink-muted">
-                      <HardDrive size={12} /> {formatBytes(r.sizeBytes)}
-                    </div>
-                    <div className="flex items-center gap-1.5 text-ink-muted">
-                      <MapPin size={12} /> {r.roadCount?.toLocaleString() || 0} roads
-                    </div>
-                    <div className="flex items-center gap-1.5 text-ink-muted">
-                      <Clock size={12} /> {new Date(r.updatedAt).toLocaleDateString()}
-                    </div>
-                    <div className="flex items-center gap-1.5 text-ink-muted">
-                      <Gauge size={12} /> {r.radiusKm} km radius
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
