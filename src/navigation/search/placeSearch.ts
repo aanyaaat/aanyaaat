@@ -235,3 +235,116 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
 }
+
+export interface HumanAreaInfo {
+  title: string;
+  subtitle: string;
+  keyAreas: string[];
+}
+
+const KNOWN_METRO_REGIONS = [
+  {
+    name: 'New Delhi & Central NCR',
+    state: 'Delhi & National Capital Region, India',
+    south: 28.25, north: 28.95, west: 76.85, east: 77.55,
+    areas: ['Connaught Place', 'India Gate', 'Karol Bagh', 'Lajpat Nagar', 'Janpath', 'Chanakyapuri', 'Rohini', 'Noida']
+  },
+  {
+    name: 'Bengaluru Metropolitan Area',
+    state: 'Bengaluru Urban & Rural, Karnataka, India',
+    south: 12.70, north: 13.45, west: 77.30, east: 77.90,
+    areas: ['MG Road', 'Indiranagar', 'Koramangala', 'Whitefield', 'Hebbal', 'Jayanagar', 'Devanahalli', 'Electronic City']
+  },
+  {
+    name: 'Mumbai Metropolitan Region',
+    state: 'Mumbai & MMR, Maharashtra, India',
+    south: 18.80, north: 19.40, west: 72.70, east: 73.20,
+    areas: ['Bandra', 'Andheri', 'Colaba', 'Dadar', 'Juhu', 'Powai', 'Thane', 'Navi Mumbai']
+  },
+  {
+    name: 'Hyderabad City & Cyberabad',
+    state: 'Hyderabad, Telangana, India',
+    south: 17.15, north: 17.65, west: 78.15, east: 78.70,
+    areas: ['HITEC City', 'Gachibowli', 'Banjara Hills', 'Jubilee Hills', 'Charminar', 'Secunderabad', 'Madhapur']
+  },
+  {
+    name: 'Chennai Metropolitan Region',
+    state: 'Chennai, Tamil Nadu, India',
+    south: 12.80, north: 13.30, west: 80.00, east: 80.40,
+    areas: ['T. Nagar', 'Adyar', 'Anna Nagar', 'Mylapore', 'Velachery', 'OMR Road', 'Guindy', 'Marina Beach']
+  },
+  {
+    name: 'Pune & PCMC Area',
+    state: 'Pune, Maharashtra, India',
+    south: 18.30, north: 18.80, west: 73.60, east: 74.10,
+    areas: ['Kothrud', 'Viman Nagar', 'Koregaon Park', 'Hinjawadi', 'Shivajinagar', 'Hadapsar', 'Baner', 'Wakad']
+  },
+  {
+    name: 'Kolkata Metropolitan Area',
+    state: 'Kolkata, West Bengal, India',
+    south: 22.30, north: 22.80, west: 88.15, east: 88.60,
+    areas: ['Park Street', 'Salt Lake', 'New Town', 'Howrah', 'Ballygunge', 'Esplanade', 'Alipore']
+  },
+  {
+    name: 'San Francisco Bay Area',
+    state: 'California, United States',
+    south: 37.25, north: 38.00, west: -122.60, east: -122.10,
+    areas: ['Downtown SF', 'Mission District', 'SOMA', 'Oakland', 'Berkeley', 'Palo Alto', 'San Jose']
+  },
+  {
+    name: 'Greater London Region',
+    state: 'Greater London, United Kingdom',
+    south: 51.25, north: 51.75, west: -0.55, east: 0.35,
+    areas: ['Westminster', 'City of London', 'Camden', 'Greenwich', 'Kensington', 'Shoreditch', 'Canary Wharf']
+  }
+];
+
+export async function resolveHumanAreaDetails(
+  lat: number,
+  lng: number,
+  radiusKm = 30
+): Promise<HumanAreaInfo> {
+  // 1. Check known metro bounds for instant 0ms offline recognition
+  for (const m of KNOWN_METRO_REGIONS) {
+    if (lat >= m.south && lat <= m.north && lng >= m.west && lng <= m.east) {
+      return {
+        title: `${m.name} (${radiusKm}km)`,
+        subtitle: m.state,
+        keyAreas: m.areas,
+      };
+    }
+  }
+
+  // 2. If online, reverse geocode to fetch real human city and state name
+  if (typeof navigator !== 'undefined' && navigator.onLine) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=12&addressdetails=1`;
+      const res = await fetch(url, { headers: { 'Accept-Language': 'en' }, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const json = await res.json();
+        const addr = json.address || {};
+        const town = addr.city || addr.town || addr.municipality || addr.district || addr.county || addr.suburb || json.name;
+        const state = [addr.state, addr.country].filter(Boolean).join(', ');
+        if (town) {
+          return {
+            title: `${town} Area (${radiusKm}km)`,
+            subtitle: state || 'Offline Map Coverage',
+            keyAreas: [town, addr.suburb, addr.neighbourhood, addr.county].filter(Boolean) as string[],
+          };
+        }
+      }
+    } catch {
+      /* fallback */
+    }
+  }
+
+  // 3. Fallback
+  return {
+    title: `Local Coverage Area (${radiusKm}km)`,
+    subtitle: 'Highways, Arterial Roads & Local Streets',
+    keyAreas: ['Major Arterials', 'Connecting Highways', 'Local Roads', 'Places of Interest'],
+  };
+}

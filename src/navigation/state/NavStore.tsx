@@ -609,6 +609,9 @@ export function NavProvider({ children }: { children: ReactNode }) {
   );
 
   const removeOfflineRegion = useCallback(async (id: string) => {
+    autoDownloadInProgressRef.current = false;
+    setInstalling(false);
+    setDownloadProgress(null);
     await deleteRegionData(id);
     setRegions((prev) => prev.filter((r) => r.id !== id));
   }, []);
@@ -650,7 +653,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Intelligent 30km Auto-Download:
-  // 1. On page load: If 0 maps exist, immediately download the 30km map around user position/home.
+  // 1. On page load: If 0 maps exist, download the 30km map around user position/home.
   // 2. Subsequent locations: If user moves to an entirely new location (no quadrant overlap / not already covered), download. Never download overlapping/same quadrants twice.
   const autoDownloadInProgressRef = useRef(false);
   const initialAutoDownloadAttemptedRef = useRef(false);
