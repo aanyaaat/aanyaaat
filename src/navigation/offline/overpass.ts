@@ -4,11 +4,16 @@ import type {
   Poi,
   Bbox,
 } from '@/navigation/domain/types';
+import {
+  saveDownloadJobCheckpoint,
+  getDownloadJobCheckpoint,
+  clearDownloadJobCheckpoint,
+} from '@/navigation/offline/regions';
 
 /**
- * Fetches OpenStreetMap vector data from Overpass API.
- * Uses sub-quadrant grid fetching for large bounding boxes (e.g., 30km radius)
- * to avoid HTTP 504 Gateway Timeouts and maximize download speed.
+ * High-speed OpenStreetMap vector data downloader.
+ * Uses parallel multi-endpoint streaming across global Overpass mirrors
+ * with persistent IndexedDB quadrant checkpoints to finish in background.
  */
 
 const OVERPASS_ENDPOINTS = [
@@ -16,6 +21,8 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.nchc.org.tw/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://z.overpass-api.de/api/interpreter',
 ];
 
 const MAX_BBOX_DEGREE_SPAN = 0.85; // ~55km max span
@@ -56,30 +63,71 @@ export async function fetchOsmBbox(
 ): Promise<OfflineRegion> {
   validateDownloadBounds(south, west, north, east);
 
-  // If bbox is large (> 0.28° span, e.g. 30km radius), split into 4 sub-quadrants to prevent 504 Gateway Timeout
+  const jobId = `job_${Math.round(south * 100)}_${Math.round(west * 100)}_${Math.round(north * 100)}_${Math.round(east * 100)}`;
+
+  // If bbox is large (> 0.28° span, e.g. 30km radius), split into 4 high-speed parallel sub-quadrants
   const latSpan = north - south;
   const lngSpan = east - west;
 
   if (latSpan > 0.28 || lngSpan > 0.28) {
-    onProgress?.('Downloading map region in 4 fast sub-quadrants…');
     const midLat = (south + north) / 2;
     const midLng = (west + east) / 2;
 
     const quads = [
-      { s: south, w: west, n: midLat, e: midLng }, // SW
-      { s: south, w: midLng, n: midLat, e: east }, // SE
-      { s: midLat, w: west, n: north, e: midLng }, // NW
-      { s: midLat, w: midLng, n: north, e: east }, // NE
+      { id: 0, label: 'SW', s: south, w: west, n: midLat, e: midLng },
+      { id: 1, label: 'SE', s: south, w: midLng, n: midLat, e: east },
+      { id: 2, label: 'NW', s: midLat, w: west, n: north, e: midLng },
+      { id: 3, label: 'NE', s: midLat, w: midLng, n: north, e: east },
     ];
 
-    const elementsMap = new Map<number | string, OverpassNode | OverpassWay>();
+    // Load any existing background checkpoint
+    const checkpoint = await getDownloadJobCheckpoint(jobId);
+    const completedSet = new Set<number>(checkpoint?.completedQuadrants || []);
+    const cachedElements: Record<number, (OverpassNode | OverpassWay)[]> = checkpoint?.quadrantElements || {};
 
-    for (let i = 0; i < quads.length; i++) {
+    let completedCount = completedSet.size;
+    onProgress?.(`Accelerating map download (${completedCount}/4 quadrants ready)…`, completedCount, 4);
+
+    const quadPromises = quads.map(async (q, idx) => {
+      if (completedSet.has(q.id) && cachedElements[q.id]) {
+        return cachedElements[q.id];
+      }
+
       if (signal?.aborted) throw new Error('Download aborted by user.');
-      const q = quads[i];
-      onProgress?.(`Fetching quadrant ${i + 1}/4…`);
-      const quadElements = await fetchSingleBboxElements(q.s, q.w, q.n, q.e, signal);
-      for (const el of quadElements) {
+
+      // Distribute quadrants across distinct server mirrors
+      const preferredMirrorIndex = idx % OVERPASS_ENDPOINTS.length;
+      const elements = await fetchSingleBboxElements(q.s, q.w, q.n, q.e, signal, preferredMirrorIndex);
+
+      completedSet.add(q.id);
+      cachedElements[q.id] = elements;
+      completedCount++;
+
+      // Save persistent checkpoint to IndexedDB so backgrounding/reload retains chunk
+      void saveDownloadJobCheckpoint({
+        id: jobId,
+        centerLat: (south + north) / 2,
+        centerLng: (west + east) / 2,
+        radiusKm: 30,
+        label: 'Auto-saved area',
+        south,
+        west,
+        north,
+        east,
+        completedQuadrants: Array.from(completedSet),
+        quadrantElements: cachedElements,
+        timestamp: Date.now(),
+      });
+
+      onProgress?.(`Downloaded quadrant ${q.label} (${completedCount}/4 ready)…`, completedCount, 4);
+      return elements;
+    });
+
+    const allQuadResults = await Promise.all(quadPromises);
+
+    const elementsMap = new Map<string, OverpassNode | OverpassWay>();
+    for (const quadList of allQuadResults) {
+      for (const el of quadList) {
         const key = `${el.type}_${el.id}`;
         if (!elementsMap.has(key)) {
           elementsMap.set(key, el);
@@ -87,11 +135,14 @@ export async function fetchOsmBbox(
       }
     }
 
+    // Clean up finished checkpoint
+    void clearDownloadJobCheckpoint(jobId);
+
     const combinedElements = Array.from(elementsMap.values());
     return parseElementsToRegion(south, west, north, east, combinedElements, onProgress);
   }
 
-  const singleElements = await fetchSingleBboxElements(south, west, north, east, signal, onProgress);
+  const singleElements = await fetchSingleBboxElements(south, west, north, east, signal, 0, onProgress);
   return parseElementsToRegion(south, west, north, east, singleElements, onProgress);
 }
 
@@ -101,11 +152,12 @@ async function fetchSingleBboxElements(
   north: number,
   east: number,
   signal?: AbortSignal,
+  preferredEndpointIndex = 0,
   onProgress?: (msg: string, bytesReceived?: number, totalBytes?: number | null) => void
 ): Promise<(OverpassNode | OverpassWay)[]> {
   const bbox = `${south},${west},${north},${east}`;
   const query = `
-    [out:json][timeout:60];
+    [out:json][timeout:25][maxsize:25000000];
     (
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)$"](${bbox});
       node["amenity"="hospital"](${bbox});
@@ -118,7 +170,13 @@ async function fetchSingleBboxElements(
 
   let lastErr: Error | null = null;
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
+  // Reorder endpoints starting with preferred mirror
+  const endpoints = [
+    ...OVERPASS_ENDPOINTS.slice(preferredEndpointIndex),
+    ...OVERPASS_ENDPOINTS.slice(0, preferredEndpointIndex),
+  ];
+
+  for (const endpoint of endpoints) {
     if (signal?.aborted) throw new Error('Download aborted by user.');
 
     try {
@@ -126,7 +184,7 @@ async function fetchSingleBboxElements(
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
-        signal: signal || AbortSignal.timeout(30000),
+        signal: signal || AbortSignal.timeout(18000),
       });
 
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
@@ -143,7 +201,7 @@ async function fetchSingleBboxElements(
     }
   }
 
-  throw new Error(`Overpass download failed: ${lastErr?.message ?? '504 Gateway Timeout'}`);
+  throw new Error(`Overpass download failed: ${lastErr?.message ?? 'Gateway Timeout'}`);
 }
 
 function parseElementsToRegion(

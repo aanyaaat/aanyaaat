@@ -514,14 +514,63 @@ export async function getMeta<T>(key: string): Promise<T | null> {
   }
 }
 
-export async function setMeta<T>(key: string, value: T): Promise<void> {
-  const db = await getDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(META_STORE, 'readwrite');
-    tx.objectStore(META_STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+/* --------------------------- Download Checkpoints --------------------------- */
+
+export interface DownloadJobCheckpoint {
+  id: string;
+  centerLat: number;
+  centerLng: number;
+  radiusKm: RegionPresetKm;
+  label: string;
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  completedQuadrants: number[];
+  quadrantElements: Record<number, any[]>;
+  timestamp: number;
+}
+
+export async function saveDownloadJobCheckpoint(job: DownloadJobCheckpoint): Promise<void> {
+  try {
+    const db = await getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(DOWNLOAD_JOB_STORE, 'readwrite');
+      tx.objectStore(DOWNLOAD_JOB_STORE).put(job);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function getDownloadJobCheckpoint(id: string): Promise<DownloadJobCheckpoint | null> {
+  try {
+    const db = await getDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DOWNLOAD_JOB_STORE, 'readonly');
+      const req = tx.objectStore(DOWNLOAD_JOB_STORE).get(id);
+      req.onsuccess = () => resolve((req.result as DownloadJobCheckpoint) ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function clearDownloadJobCheckpoint(id: string): Promise<void> {
+  try {
+    const db = await getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(DOWNLOAD_JOB_STORE, 'readwrite');
+      tx.objectStore(DOWNLOAD_JOB_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 /* --------------------------- Install --------------------------- */

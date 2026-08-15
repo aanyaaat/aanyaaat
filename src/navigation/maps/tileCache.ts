@@ -82,6 +82,20 @@ export function getParentTileFallback(
   return null;
 }
 
+const MAX_CONCURRENT_FETCHES = 8;
+let activeFetchCount = 0;
+const PENDING_QUEUE: Array<() => void> = [];
+
+function pumpQueue() {
+  while (activeFetchCount < MAX_CONCURRENT_FETCHES && PENDING_QUEUE.length > 0) {
+    const nextTask = PENDING_QUEUE.shift();
+    if (nextTask) {
+      activeFetchCount++;
+      nextTask();
+    }
+  }
+}
+
 export function loadTile(
   z: number,
   x: number,
@@ -105,79 +119,102 @@ export function loadTile(
 
   IN_FLIGHT_KEYS.add(key);
 
-  // 1. Try to load from IndexedDB persistent tile store first asynchronously
-  void getTileFromDb(key).then((dataUrl) => {
-    if (dataUrl && !MEMORY_CACHE.has(key)) {
-      const dbImg = new Image();
-      dbImg.onload = () => {
-        IN_FLIGHT_KEYS.delete(key);
-        MEMORY_CACHE.set(key, dbImg);
-        onLoaded?.();
-      };
-      dbImg.src = dataUrl;
-    }
-  });
-
-  const url = getTileUrl(z, x, y, dark);
-  if (!url) {
-    IN_FLIGHT_KEYS.delete(key);
-    return null;
-  }
-
-  void cacheUrlInChromeCache(url);
-
-  const img = new Image();
-
-  img.onload = () => {
-    IN_FLIGHT_KEYS.delete(key);
-    if (MEMORY_CACHE.size >= MAX_MEMORY_TILES) {
-      const firstKey = MEMORY_CACHE.keys().next().value;
-      if (firstKey) MEMORY_CACHE.delete(firstKey);
-    }
-    MEMORY_CACHE.set(key, img);
-    onLoaded?.();
-
-    // Persist tile asynchronously in background via blob without freezing canvas thread
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(() => {
-        void persistTileBlob(url, key);
-      });
-    }
+  const startFetch = () => {
+    // 1. Check local IndexedDB fast
+    void getTileFromDb(key).then((dataUrl) => {
+      if (dataUrl && !MEMORY_CACHE.has(key)) {
+        const dbImg = new Image();
+        dbImg.onload = () => {
+          IN_FLIGHT_KEYS.delete(key);
+          activeFetchCount--;
+          pumpQueue();
+          MEMORY_CACHE.set(key, dbImg);
+          onLoaded?.();
+        };
+        dbImg.onerror = () => {
+          fetchFromNetwork();
+        };
+        dbImg.src = dataUrl;
+        return;
+      }
+      fetchFromNetwork();
+    });
   };
 
-  img.onerror = () => {
-    const fallbackUrl = `https://a.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
-    const fallbackImg = new Image();
-    fallbackImg.onload = () => {
+  const fetchFromNetwork = () => {
+    const url = getTileUrl(z, x, y, dark);
+    if (!url) {
       IN_FLIGHT_KEYS.delete(key);
-      MEMORY_CACHE.set(key, fallbackImg);
+      activeFetchCount--;
+      pumpQueue();
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    img.onload = () => {
+      IN_FLIGHT_KEYS.delete(key);
+      activeFetchCount--;
+      pumpQueue();
+
+      if (MEMORY_CACHE.size >= MAX_MEMORY_TILES) {
+        const firstKey = MEMORY_CACHE.keys().next().value;
+        if (firstKey) MEMORY_CACHE.delete(firstKey);
+      }
+      MEMORY_CACHE.set(key, img);
       onLoaded?.();
-    };
-    fallbackImg.onerror = () => {
-      IN_FLIGHT_KEYS.delete(key);
-    };
-    fallbackImg.src = fallbackUrl;
-  };
 
-  img.src = url;
-  return null;
-}
-
-async function persistTileBlob(url: string, key: string) {
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) return;
-    const blob = await resp.blob();
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        void saveTileToDb(key, reader.result);
+      // Asynchronously store to IndexedDB using idle callback without extra network request
+      if (window.requestIdleCallback) {
+        window.requestIdleCallback(() => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || 256;
+            canvas.height = img.naturalHeight || 256;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0);
+              const dataUrl = canvas.toDataURL('image/png');
+              void saveTileToDb(key, dataUrl);
+            }
+          } catch {
+            /* ignore cross-origin taint */
+          }
+        });
       }
     };
-    reader.readAsDataURL(blob);
-  } catch {
-    /* ignore offline/CORS save error */
+
+    img.onerror = () => {
+      const fallbackUrl = `https://a.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
+      const fallbackImg = new Image();
+      fallbackImg.crossOrigin = 'anonymous';
+      fallbackImg.onload = () => {
+        IN_FLIGHT_KEYS.delete(key);
+        activeFetchCount--;
+        pumpQueue();
+        MEMORY_CACHE.set(key, fallbackImg);
+        onLoaded?.();
+      };
+      fallbackImg.onerror = () => {
+        IN_FLIGHT_KEYS.delete(key);
+        activeFetchCount--;
+        pumpQueue();
+      };
+      fallbackImg.src = fallbackUrl;
+    };
+
+    img.src = url;
+  };
+
+  if (activeFetchCount < MAX_CONCURRENT_FETCHES) {
+    activeFetchCount++;
+    startFetch();
+  } else {
+    PENDING_QUEUE.push(startFetch);
   }
+
+  return null;
 }
 
 let lastPrefetchTime = 0;
@@ -192,7 +229,7 @@ export function prefetchSurroundingTiles(
   dark: boolean
 ) {
   const now = Date.now();
-  if (now - lastPrefetchTime < 400) return;
+  if (now - lastPrefetchTime < 500) return;
   lastPrefetchTime = now;
 
   const margin = 1;

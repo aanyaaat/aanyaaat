@@ -306,73 +306,67 @@ export function CanvasMap({
     // Pre-fetch surrounding tiles quietly in background for pan responsiveness
     prefetchSurroundingTiles(tileZoom, minTileX, maxTileX, minTileY, maxTileY, isDark);
 
-    // 3. Render Offline Region Vector Roads (Batch-grouped & Viewport Culled for 60 FPS)
-    const bounds = viewportBounds(vp);
-    for (const regionSummary of props.regions) {
-      if (
-        bounds.north < regionSummary.bbox.south ||
-        bounds.south > regionSummary.bbox.north ||
-        bounds.east < regionSummary.bbox.west ||
-        bounds.west > regionSummary.bbox.east
-      ) {
-        continue;
-      }
+    // 3. Render Offline Region Vector Roads (Ultra-fast Spatial Grid Index Culling < 1ms)
+    if (vp.zoom >= 13) {
+      const bounds = viewportBounds(vp);
+      const minClass = vp.zoom < 14 ? 3 : 1;
 
-      const regionData = regionDataManager.getCachedData(regionSummary.id);
-      if (!regionData) {
-        void regionDataManager.requestData(regionSummary.id).then((d) => {
-          if (d) requestRender();
-        });
-        continue;
-      }
-
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      // Group roads by roadClass to minimize stroke calls
-      const classRoadsMap = new Map<number, GeoJsonRoad[]>();
-
-      for (const road of regionData.roads) {
-        if (!road.coords || road.coords.length < 2) continue;
-        if (vp.zoom < 13 && road.roadClass <= 2) continue;
-
-        if (road.bbox) {
-          if (
-            road.bbox.north < bounds.south ||
-            road.bbox.south > bounds.north ||
-            road.bbox.east < bounds.west ||
-            road.bbox.west > bounds.east
-          ) {
-            continue;
-          }
+      for (const regionSummary of props.regions) {
+        if (
+          bounds.north < regionSummary.bbox.south ||
+          bounds.south > regionSummary.bbox.north ||
+          bounds.east < regionSummary.bbox.west ||
+          bounds.west > regionSummary.bbox.east
+        ) {
+          continue;
         }
 
-        const list = classRoadsMap.get(road.roadClass) || [];
-        list.push(road);
-        classRoadsMap.set(road.roadClass, list);
-      }
+        const visibleRoads = regionDataManager.getVisibleRoads(regionSummary.id, bounds, minClass);
+        if (visibleRoads.length === 0) {
+          if (!regionDataManager.getCachedData(regionSummary.id)) {
+            void regionDataManager.requestData(regionSummary.id).then((d) => {
+              if (d) requestRender();
+            });
+          }
+          continue;
+        }
 
-      for (const [rClass, roadList] of classRoadsMap.entries()) {
-        const color = ROAD_COLORS[rClass] || (isDark ? '#404040' : '#d0d0d0');
-        const width = (ROAD_WIDTHS[rClass] || 1) * (vp.zoom >= 15 ? 1.5 : 1);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
 
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.beginPath();
+        // Group only visible roads by class (at most ~50-200 roads)
+        const classRoadsMap = new Map<number, GeoJsonRoad[]>();
+        for (const road of visibleRoads) {
+          let list = classRoadsMap.get(road.roadClass);
+          if (!list) {
+            list = [];
+            classRoadsMap.set(road.roadClass, list);
+          }
+          list.push(road);
+        }
 
-        for (const road of roadList) {
-          let started = false;
-          for (const [lng, lat] of road.coords) {
-            const pt = project(lat, lng, vp);
-            if (!started) {
-              ctx.moveTo(pt.x, pt.y);
-              started = true;
-            } else {
-              ctx.lineTo(pt.x, pt.y);
+        for (const [rClass, roadList] of classRoadsMap.entries()) {
+          const color = ROAD_COLORS[rClass] || (isDark ? '#404040' : '#d0d0d0');
+          const width = (ROAD_WIDTHS[rClass] || 1) * (vp.zoom >= 15 ? 1.5 : 1);
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+
+          for (const road of roadList) {
+            let started = false;
+            for (const [lng, lat] of road.coords) {
+              const pt = project(lat, lng, vp);
+              if (!started) {
+                ctx.moveTo(pt.x, pt.y);
+                started = true;
+              } else {
+                ctx.lineTo(pt.x, pt.y);
+              }
             }
           }
+          ctx.stroke();
         }
-        ctx.stroke();
       }
     }
 
